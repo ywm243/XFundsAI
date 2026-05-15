@@ -1,6 +1,6 @@
 """Agent memory persistence layer.
 
-Replaces the in-memory dict approach with SQLite-backed session storage.
+Replaces the in-memory dict approach with SQL-backed session storage.
 Supports: session CRUD, turn recording, context retrieval, memory summaries.
 """
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentMemory:
-    """SQLite-backed agent memory for multi-turn conversations.
+    """Agent memory for multi-turn conversations.
 
     Usage:
         memory = AgentMemory()
@@ -104,7 +104,6 @@ class AgentMemory:
         """
         # For now, use keyword overlap on the query text
         # Future: replace with Chroma vector search
-        import sqlite3
         conn = mysql_store.get_conn()
         try:
             rows = conn.execute(

@@ -1,7 +1,6 @@
 """MySQL store for rules and memory persistence.
 
-Replaces the SQLite backend with MySQL 8.0.
-All public function signatures are identical to sqlite_store.py.
+Replaces the old SQLite backend with MySQL 8.0.
 """
 
 import json
