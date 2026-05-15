@@ -274,7 +274,7 @@ def update_item(item_id: int, keywords: list[str] | None = None,
         conn = get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT category_id FROM rule_items WHERE id=%s", (item_id,))
+                cur.execute("SELECT category_id FROM rule_items WHERE id=%s AND is_active=1", (item_id,))
                 item = cur.fetchone()
                 if not item:
                     return False
@@ -341,6 +341,8 @@ def _backup_category(conn: pymysql.Connection, category_id: int) -> None:
         )
         latest = cur.fetchone()
         max_ver = list(latest.values())[0] if latest else 0
+        if max_ver is None:
+            max_ver = 0
         next_ver = max_ver + 1
 
         cur.execute(

@@ -70,7 +70,7 @@ def llm_parse(text: str, system_prompt: str) -> dict | None:
         )
         return None
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
 
     try:
         response = client.chat.completions.create(
@@ -80,7 +80,7 @@ def llm_parse(text: str, system_prompt: str) -> dict | None:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            timeout=30,
+            timeout=5,
         )
         content = response.choices[0].message.content
         if not content:

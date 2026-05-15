@@ -1,5 +1,6 @@
 """FastAPI application — FX trade query service."""
 
+import asyncio
 import json
 import logging
 import os
@@ -228,7 +229,7 @@ def get_session(session_id: str):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM sessions WHERE id = %s", (session_id,)
+                "SELECT * FROM sessions WHERE id = %s AND is_active = 1", (session_id,)
             )
             session_row = cur.fetchone()
         if not session_row:
@@ -281,7 +282,7 @@ async def save_turn(session_id: str, request: Request):
                 "SELECT COALESCE(MAX(turn_index), -1) FROM turns WHERE session_id = %s",
                 (session_id,),
             )
-            max_idx = cur.fetchone()[0]
+            max_idx = cur.fetchone()["COALESCE(MAX(turn_index), -1)"]
 
             cur.execute(
                 """INSERT INTO turns (session_id, turn_index, user_query,
@@ -349,7 +350,7 @@ async def api_parse(request: Request):
         else:
             # Low confidence — need LLM (with conversation context)
             system_prompt = build_system_prompt(context)
-            llm_result = llm_parse(text, system_prompt)
+            llm_result = await asyncio.to_thread(llm_parse, text, system_prompt)
             if llm_result is not None:
                 parsed = gatekeep(llm_result, text)
                 pipeline = f"llm+gatekeep(rule_confidence={confidence:.0%})"
@@ -393,7 +394,7 @@ async def query(request: Request):
                 logger.info("Rule-only pipeline used (confidence=%.0%%)", confidence)
             else:
                 system_prompt = build_system_prompt()
-                llm_result = llm_parse(text, system_prompt)
+                llm_result = await asyncio.to_thread(llm_parse, text, system_prompt)
                 if llm_result is not None:
                     parsed = gatekeep(llm_result, text)
                     logger.info("LLM+Gatekeep pipeline used (rule_confidence=%.0%%)", confidence)
@@ -864,7 +865,7 @@ async def api_analyze(request: Request):
     if not api_key or not base_url or not model:
         return {"summary": "LLM 未配置，无法进行分析。"}
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
 
     try:
         # Step 1: LLM decides what additional queries are needed
@@ -887,10 +888,12 @@ async def api_analyze(request: Request):
 
 用户问题：{text}"""
 
-        plan_resp = client.chat.completions.create(
-            model=model, temperature=0.1,
-            messages=[{"role": "user", "content": plan_prompt}],
-            timeout=30,
+        plan_resp = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model=model, temperature=0.1,
+                messages=[{"role": "user", "content": plan_prompt}],
+                timeout=5,
+            )
         )
         plan_content = plan_resp.choices[0].message.content or "{}"
         # Parse JSON from LLM response
@@ -907,7 +910,7 @@ async def api_analyze(request: Request):
             q_parsed = rule_based_parse(q_text)
             q_confidence = _rule_confidence(q_text, q_parsed)
             if q_confidence < 0.8:
-                llm_result = llm_parse(q_text, system_prompt)
+                llm_result = await asyncio.to_thread(llm_parse, q_text, system_prompt)
                 if llm_result:
                     q_parsed = gatekeep(llm_result, q_text)
                 else:
