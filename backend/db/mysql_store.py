@@ -383,3 +383,200 @@ def rollback_category(category_id: int, version_num: int) -> bool:
                 return True
         finally:
             conn.close()
+
+
+# ============================================================
+# Session / Memory (used by agent memory layer)
+# ============================================================
+
+def create_session(session_id: str, agent_type: str = "bi",
+                   user_id: str = "default") -> None:
+    with _lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO sessions (id, agent_type, user_id, updated_at)
+                       VALUES (%s, %s, %s, %s)
+                       ON DUPLICATE KEY UPDATE
+                           agent_type=VALUES(agent_type),
+                           user_id=VALUES(user_id),
+                           updated_at=VALUES(updated_at)""",
+                    (session_id, agent_type, user_id, _now()),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+
+def add_turn(session_id: str, turn_index: int, user_query: str,
+             parsed_params: dict | None = None, executed_sql: str | None = None,
+             result_summary: str | None = None, user_feedback: str | None = None) -> int:
+    with _lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO turns (session_id, turn_index, user_query,
+                       parsed_params, executed_sql, result_summary, user_feedback)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (session_id, turn_index, user_query,
+                     json.dumps(parsed_params, ensure_ascii=False) if parsed_params else None,
+                     executed_sql, result_summary, user_feedback),
+                )
+                cur.execute(
+                    "UPDATE sessions SET updated_at=%s WHERE id=%s",
+                    (_now(), session_id),
+                )
+                conn.commit()
+                return cur.lastrowid
+        finally:
+            conn.close()
+
+
+def get_session_context(session_id: str, last_n: int = 3) -> list[dict]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM turns WHERE session_id=%s
+                   ORDER BY turn_index DESC LIMIT %s""",
+                (session_id, last_n),
+            )
+            rows = cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("parsed_params"), str):
+                    d["parsed_params"] = json.loads(d["parsed_params"])
+                result.append(d)
+            return list(reversed(result))
+    finally:
+        conn.close()
+
+
+def add_summary(session_id: str, summary_type: str, content: dict,
+                source_turns: str | None = None) -> int:
+    with _lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO memory_summaries (session_id, summary_type, content, source_turns)
+                       VALUES (%s, %s, %s, %s)""",
+                    (session_id, summary_type,
+                     json.dumps(content, ensure_ascii=False), source_turns),
+                )
+                conn.commit()
+                return cur.lastrowid
+        finally:
+            conn.close()
+
+
+# ============================================================
+# Migration from JSON files
+# ============================================================
+
+def migrate_from_json(rules_path: str | None = None) -> int:
+    if rules_path is None:
+        rules_path = str(
+            Path(__file__).resolve().parent.parent / "knowledge_base" / "semantic_rules.json"
+        )
+
+    with open(rules_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    init_db()
+    count = 0
+
+    CATEGORY_MAP: dict[str, tuple[str, str, str, str | None]] = {
+        "app_id":               ("app_id",               "产品类型映射",     "common", None),
+        "buy_sell_direction":    ("buy_sell_direction",    "买卖方向映射",     "common", None),
+        "product_type":          ("product_type",          "交易类型映射",     "common", None),
+        "special_states":        ("special_trade_type",    "特殊交易类型映射", "common", "state"),
+        "trade_class":           ("special_trade_type",    "特殊交易类型映射", "common", "class"),
+        "time_expressions":      ("time_expressions",      "时间表达式映射",   "common", None),
+    }
+    BI_CATEGORIES = {"comparison_modifiers"}
+
+    def _ensure_category(conn, agent_type: str, category: str, display_name: str) -> int:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT IGNORE INTO rule_categories (agent_type, category, display_name)
+                   VALUES (%s, %s, %s)""",
+                (agent_type, category, display_name),
+            )
+            cur.execute(
+                "SELECT id FROM rule_categories WHERE agent_type=%s AND category=%s",
+                (agent_type, category),
+            )
+            return cur.fetchone()["id"]
+
+    def _insert_rules(conn, category_id: int, rules: list, sub_type: str | None = None) -> int:
+        n = 0
+        for rule in rules:
+            keywords = rule.pop("keywords", None) or rule.pop("keyword", None)
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            if not keywords:
+                keywords = []
+            rule_data = {k: v for k, v in rule.items() if not k.startswith("_")}
+            if sub_type:
+                rule_data["sub_type"] = sub_type
+            is_ironclad = not rule.get("customer_reversible", True)
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO rule_items (category_id, keywords, rule_data, is_ironclad)
+                       VALUES (%s, %s, %s, %s)""",
+                    (category_id, json.dumps(keywords, ensure_ascii=False),
+                     json.dumps(rule_data, ensure_ascii=False),
+                     1 if is_ironclad else 0),
+                )
+            n += 1
+        return n
+
+    with _lock:
+        conn = get_conn()
+        try:
+            for category_key, category_val in data.items():
+                if category_key.startswith("_"):
+                    continue
+
+                if category_key in CATEGORY_MAP:
+                    (cat_key, display_name, agent_type, sub_type) = CATEGORY_MAP[category_key]
+                    rules_list = category_val.get("rules", [])
+                    if not rules_list:
+                        continue
+                    cat_id = _ensure_category(conn, agent_type, cat_key, display_name)
+                    count += _insert_rules(conn, cat_id, rules_list, sub_type)
+
+                if isinstance(category_val, dict) and category_key == "time_expressions":
+                    for nested_key, nested_val in category_val.items():
+                        if nested_key in BI_CATEGORIES and isinstance(nested_val, dict) and "rules" in nested_val:
+                            display_name = nested_val.get("_description", nested_key)
+                            cat_id = _ensure_category(conn, "bi", nested_key, display_name)
+                            count += _insert_rules(conn, cat_id, nested_val["rules"])
+
+            conn.commit()
+            logger.info("Migrated %d rules from %s to MySQL", count, rules_path)
+            return count
+        finally:
+            conn.close()
+
+
+def _auto_migrate() -> None:
+    init_db()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM rule_items")
+            cnt = cur.fetchone()["cnt"]
+        if cnt == 0:
+            logger.info("MySQL rule store is empty, running auto-migration...")
+            migrate_from_json()
+    finally:
+        conn.close()
+
+
+_auto_migrate()
