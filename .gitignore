@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+frontend/dist/
+.worktrees/
+.claude/settings.local.json
+backend/data/
+.superpowers/

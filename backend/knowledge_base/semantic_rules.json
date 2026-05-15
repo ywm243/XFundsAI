@@ -1,0 +1,415 @@
+{
+  "_description": "外汇交易语义映射规则文件 — 用于将自然语言查询转换为结构化查询条件",
+
+  "product_type": {
+    "_description": "产品类型映射",
+    "rules": [
+      { "keywords": ["即期", "即期外汇"], "value": "spot", "meaning": "即期外汇交易" },
+      { "keywords": ["远期", "远期外汇", "远期结售汇"], "value": "fwd", "meaning": "远期外汇交易" },
+      { "keywords": ["掉期", "外汇掉期"], "value": "swap", "meaning": "外汇掉期交易" },
+      { "keywords": ["即期/远期", "即期和远期", "即远期"], "value": "all", "meaning": "即期和远期全部" }
+    ],
+    "default": null
+  },
+
+  "buy_sell_direction": {
+    "_description": "买卖方向判定。银行人员术语默认银行角度；带'客户'前缀时方向反转（结汇/购汇/售汇类除外）。掉期方向指远端。",
+    "_principle": "优先级从上到下，首条匹配即停止。customer_reversible=false 的规则为铁律，不受客户前缀影响。",
+    "rules": [
+      {
+        "keywords": ["结汇", "结汇交易"],
+        "product_types": ["spot", "fwd", "swap"],
+        "direction": "B",
+        "customer_reversible": false,
+        "set_app_id": 2,
+        "description": "结汇=银行买入外汇，属结售汇业务，不受客户前缀影响"
+      },
+      {
+        "keywords": ["购汇", "售汇", "购汇交易", "售汇交易"],
+        "product_types": ["spot", "fwd", "swap"],
+        "direction": "S",
+        "customer_reversible": false,
+        "set_app_id": 2,
+        "description": "购汇/售汇=银行卖出外汇，属结售汇业务，不受客户前缀影响"
+      },
+      {
+        "keywords": ["近购远结", "近售远结"],
+        "product_types": ["swap"],
+        "direction": "B",
+        "customer_reversible": false,
+        "set_app_id": 2,
+        "description": "掉期：近端购汇/售汇+远端结汇 → 银行远端买入(B)，结售汇业务"
+      },
+      {
+        "keywords": ["近结远购", "近结远售"],
+        "product_types": ["swap"],
+        "direction": "S",
+        "customer_reversible": false,
+        "set_app_id": 2,
+        "description": "掉期：近端结汇+远端购汇/售汇 → 银行远端卖出(S)，结售汇业务"
+      },
+      {
+        "keywords": ["买入", "买", "购买", "BUY"],
+        "product_types": ["spot", "fwd"],
+        "direction": "B",
+        "customer_reversible": true,
+        "customer_direction": "S",
+        "description": "即期/远期：银行买入(B)；客户买入→银行卖出(S)"
+      },
+      {
+        "keywords": ["卖出", "卖", "出售", "SELL"],
+        "product_types": ["spot", "fwd"],
+        "direction": "S",
+        "customer_reversible": true,
+        "customer_direction": "B",
+        "description": "即期/远期：银行卖出(S)；客户卖出→银行买入(B)"
+      },
+      {
+        "keywords": ["买入", "买", "近卖远买"],
+        "product_types": ["swap"],
+        "direction": "B",
+        "customer_reversible": true,
+        "customer_direction": "S",
+        "description": "掉期：银行远端买入(B)；客户买入/客户近卖远买→银行远端卖出(S)"
+      },
+      {
+        "keywords": ["卖出", "卖", "近买远卖"],
+        "product_types": ["swap"],
+        "direction": "S",
+        "customer_reversible": true,
+        "customer_direction": "B",
+        "description": "掉期：银行远端卖出(S)；客户卖出/客户近买远卖→银行远端买入(B)"
+      }
+    ],
+    "default": null
+  },
+
+  "time_expressions": {
+    "_description": "时间表达式映射 — 返回闭区间起止日期 [startDate, endDate]",
+    "rules": [
+      {
+        "pattern": "今年N月上旬",
+        "param": "N",
+        "compute_start": "本年N月1日",
+        "compute_end": "本年N月10日",
+        "example": "今年1月上旬 → [本年1月1日, 本年1月10日]"
+      },
+      {
+        "pattern": "今年N月中旬",
+        "param": "N",
+        "compute_start": "本年N月11日",
+        "compute_end": "本年N月20日",
+        "example": "今年1月中旬 → [本年1月11日, 本年1月20日]"
+      },
+      {
+        "pattern": "今年N月下旬",
+        "param": "N",
+        "compute_start": "本年N月21日",
+        "compute_end": "本年N月最后一天",
+        "example": "今年1月下旬 → [本年1月21日, 本年1月31日]"
+      },
+      {
+        "pattern": "今年N月",
+        "param": "N",
+        "compute_start": "本年N月1日",
+        "compute_end": "本年N月最后一天",
+        "example": "今年1月份 → [本年1月1日, 本年1月31日]"
+      },
+      {
+        "pattern": "今年",
+        "compute_start": "本年1月1日",
+        "compute_end": "今天",
+        "example": "今年 → [本年1月1日, 今天]"
+      },
+      {
+        "pattern": "去年N月上旬",
+        "param": "N",
+        "compute_start": "去年N月1日",
+        "compute_end": "去年N月10日",
+        "example": "去年3月上旬 → [去年3月1日, 去年3月10日]"
+      },
+      {
+        "pattern": "去年N月中旬",
+        "param": "N",
+        "compute_start": "去年N月11日",
+        "compute_end": "去年N月20日",
+        "example": "去年3月中旬 → [去年3月11日, 去年3月20日]"
+      },
+      {
+        "pattern": "去年N月下旬",
+        "param": "N",
+        "compute_start": "去年N月21日",
+        "compute_end": "去年N月最后一天",
+        "example": "去年3月下旬 → [去年3月21日, 去年3月31日]"
+      },
+      {
+        "pattern": "去年N月",
+        "param": "N",
+        "compute_start": "去年N月1日",
+        "compute_end": "去年N月最后一天",
+        "example": "去年3月份 → [去年3月1日, 去年3月31日]"
+      },
+      {
+        "pattern": "去年",
+        "compute_start": "去年1月1日",
+        "compute_end": "去年12月31日",
+        "example": "去年 → [去年1月1日, 去年12月31日]"
+      },
+      {
+        "pattern": "上月",
+        "compute_start": "上月1日",
+        "compute_end": "上月最后一天",
+        "example": "上月 → [上月1日, 上月最后一天]"
+      },
+      {
+        "pattern": "本周",
+        "compute_start": "本周一",
+        "compute_end": "今天",
+        "example": "本周 → [本周一, 今天]"
+      },
+      {
+        "pattern": "本月",
+        "compute_start": "本月1日",
+        "compute_end": "今天",
+        "example": "本月 → [本月1日, 今天]"
+      },
+      {
+        "pattern": "上旬",
+        "compute_start": "本月1日",
+        "compute_end": "本月10日",
+        "example": "上旬 → [本月1日, 本月10日]"
+      },
+      {
+        "pattern": "中旬",
+        "compute_start": "本月11日",
+        "compute_end": "本月20日",
+        "example": "中旬 → [本月11日, 本月20日]"
+      },
+      {
+        "pattern": "下旬",
+        "compute_start": "本月21日",
+        "compute_end": "本月最后一天",
+        "example": "下旬 → [本月21日, 本月最后一天]"
+      },
+      {
+        "pattern": "N月上旬",
+        "param": "N",
+        "compute_start": "本年N月1日",
+        "compute_end": "本年N月10日",
+        "example": "1月上旬 → [本年1月1日, 本年1月10日]"
+      },
+      {
+        "pattern": "N月中旬",
+        "param": "N",
+        "compute_start": "本年N月11日",
+        "compute_end": "本年N月20日",
+        "example": "1月中旬 → [本年1月11日, 本年1月20日]"
+      },
+      {
+        "pattern": "N月下旬",
+        "param": "N",
+        "compute_start": "本年N月21日",
+        "compute_end": "本年N月最后一天",
+        "example": "1月下旬 → [本年1月21日, 本年1月31日]"
+      },
+      {
+        "pattern": "本季度",
+        "compute_start": "本季度初",
+        "compute_end": "今天",
+        "example": "本季度 → [本季度初, 今天]"
+      },
+      {
+        "pattern": "今年第N季度 / 今年N季度",
+        "param": "N (1-4 或 一二三四)",
+        "compute_start": "本年该季度首月1日",
+        "compute_end": "本年该季度末月最后一天",
+        "example": "今年一季度 → [本年1月1日, 本年3月31日]; 今年第二季度 → [本年4月1日, 本年6月30日]"
+      },
+      {
+        "pattern": "第N季度 / N季度",
+        "param": "N (1-4 或 一二三四)",
+        "compute_start": "本年该季度首月1日",
+        "compute_end": "本年该季度末月最后一天",
+        "example": "一季度 → [本年1月1日, 本年3月31日]; 第3季度 → [本年7月1日, 本年9月30日]; 第四季度 → [本年10月1日, 本年12月31日]"
+      },
+      {
+        "pattern": "上半年",
+        "compute_start": "本年1月1日",
+        "compute_end": "本年6月30日",
+        "example": "上半年 → [本年1月1日, 本年6月30日]"
+      },
+      {
+        "pattern": "下半年",
+        "compute_start": "本年7月1日",
+        "compute_end": "本年12月31日",
+        "example": "下半年 → [本年7月1日, 本年12月31日]"
+      },
+      {
+        "pattern": "去年N月",
+        "param": "N",
+        "compute_start": "去年N月1日",
+        "compute_end": "去年N月最后一天",
+        "example": "去年3月份 → [去年3月1日, 去年3月31日]"
+      },
+      {
+        "pattern": "去年",
+        "compute_start": "去年1月1日",
+        "compute_end": "去年12月31日",
+        "example": "去年 → [去年1月1日, 去年12月31日]"
+      },
+      {
+        "pattern": "前年",
+        "compute_start": "前年1月1日",
+        "compute_end": "前年12月31日",
+        "example": "前年 → [前年1月1日, 前年12月31日]"
+      },
+      {
+        "pattern": "近N天",
+        "param": "N",
+        "compute_start": "今天往前N天",
+        "compute_end": "今天",
+        "example": "近7天 → [今天-7, 今天]"
+      },
+      {
+        "pattern": "近N个月",
+        "param": "N",
+        "compute_start": "今天往前N个月",
+        "compute_end": "今天",
+        "example": "近3个月 → [今天-3月, 今天]"
+      },
+      {
+        "pattern": "近N年",
+        "param": "N",
+        "compute_start": "今天往前N年",
+        "compute_end": "今天",
+        "example": "近1年 → [今天-1年, 今天]"
+      },
+      {
+        "pattern": "昨天",
+        "compute_start": "昨天",
+        "compute_end": "昨天",
+        "example": "昨天 → [昨天, 昨天]"
+      },
+      {
+        "pattern": "今天",
+        "compute_start": "今天",
+        "compute_end": "今天",
+        "example": "今天 → [今天, 今天]"
+      },
+      {
+        "pattern": "YYYY年MM月DD日",
+        "compute_start": "解析为具体日期",
+        "compute_end": "解析为具体日期",
+        "example": "2025年1月1日 → [2025-01-01, 2025-01-01]"
+      },
+      {
+        "pattern": "YYYY年MM月",
+        "compute_start": "解析为当月1日",
+        "compute_end": "解析为当月最后一天",
+        "example": "2025年1月 → [2025-01-01, 2025-01-31]"
+      }
+    ],
+    "comparison_modifiers": {
+      "_description": "对比修饰符 — 当查询包含对比关键词时，在基础时间区间之外额外生成对比区间。'同步'在金融语境中等价于'同比'。",
+      "rules": [
+        {
+          "keyword": "同比",
+          "description": "与去年同期对比，当前区间整体前移一年",
+          "compute_start": "当前区间起点前移一年",
+          "compute_end": "当前区间终点前移一年",
+          "note": "若对比日期不存在（如2月29日平年），取当月最后一天",
+          "example": "本月同比 → 当前[本月1日, 今天] + 对比[去年本月1日, 去年今天]"
+        },
+        {
+          "keyword": "同步",
+          "description": "与去年同期对比（等价于同比），如'同步增加'、'同步增长'",
+          "compute_start": "当前区间起点前移一年",
+          "compute_end": "当前区间终点前移一年",
+          "note": "与同比逻辑完全一致",
+          "example": "同步增加多少 → comparison=yoy"
+        },
+        {
+          "keyword": "环比",
+          "description": "与上一周期对比，取紧邻当前区间之前的等长区间",
+          "compute_start": "当前区间起点前移一个区间长度",
+          "compute_end": "当前区间起点前一天",
+          "note": "若对比月份天数不足（如3月31日环比到2月），对比终点取当月最后一天",
+          "example": "本月环比 → 当前[本月1日, 今天] + 对比[上月1日, 上月同日]; 若上月同日不存在则取上月最后一天"
+        }
+      ]
+    },
+    "default": null
+  },
+
+  "special_states": {
+    "_description": "特殊状态映射 — 映射到数据库 SPECIALSTATE 字段。注意：'在途'不是SPECIALSTATE，'在途'=totaldelivery表剩余金额>0（未完结），可能表现为签约交易、展期远端、提前交割近端。",
+    "rules": [
+      { "keywords": ["逾期", "逾期交易", "已过期"], "field": "SPECIALSTATE", "value": "1", "meaning": "逾期状态" },
+      { "keywords": ["展期", "展期交易", "延期"], "field": "SPECIALSTATE", "value": "3", "meaning": "展期状态" },
+      { "keywords": ["提前交割", "提前交收"], "field": "SPECIALSTATE", "value": "4", "meaning": "提前交割状态" },
+      { "keywords": ["平仓", "已平仓"], "field": "SPECIALSTATE", "value": "5", "meaning": "平仓状态" }
+    ],
+    "default": null
+  },
+
+  "trade_class": {
+    "_description": "特殊交易类别（SPECTRADECLASS）映射 — 泛化关键词「平仓」「平盘」匹配所有平仓子类",
+    "rules": [
+      { "keywords": ["普通交易", "正常交易"], "value": 0, "meaning": "普通交易" },
+      { "keywords": ["提前平仓", "平仓", "平盘"], "value": 1, "meaning": "提前平仓" },
+      { "keywords": ["交割日平仓", "平仓", "平盘"], "value": 2, "meaning": "交割日平仓" },
+      { "keywords": ["市价展期", "展期"], "value": 3, "meaning": "市价展期" },
+      { "keywords": ["提前交割"], "value": 4, "meaning": "提前交割" },
+      { "keywords": ["原价展期", "展期"], "value": 5, "meaning": "原价展期" },
+      { "keywords": ["全部平仓", "平仓", "平盘"], "value": 6, "meaning": "全部平仓" },
+      { "keywords": ["反向平盘", "平仓", "平盘"], "value": 7, "meaning": "反向平盘" },
+      { "keywords": ["提前平仓", "平仓", "平盘"], "value": 10, "meaning": "提前平仓" },
+      { "keywords": ["到期平仓", "平仓", "平盘"], "value": 11, "meaning": "到期平仓" },
+      { "keywords": ["近端原价展期", "展期"], "value": 12, "meaning": "近端原价展期" },
+      { "keywords": ["近端市价展期", "展期"], "value": 13, "meaning": "近端市价展期" },
+      { "keywords": ["近端到期交割"], "value": 14, "meaning": "近端到期交割" },
+      { "keywords": ["近端到期平仓", "平仓", "平盘"], "value": 15, "meaning": "近端到期平仓" },
+      { "keywords": ["近端提前交割", "提前交割"], "value": 16, "meaning": "近端提前交割" },
+      { "keywords": ["近端提前平仓", "平仓", "平盘"], "value": 17, "meaning": "近端提前平仓" }
+    ],
+    "_classification": {
+      "平仓交易": "关键词含「平仓」或「平盘」→ 匹配所有平仓子类 (1,2,6,7,10,11,15,17)",
+      "提前交割交易": "关键词含「提前交割」→ (4,16)",
+      "展期交易": "关键词含「展期」→ 匹配所有展期子类 (3,5,12,13)"
+    },
+    "default": null
+  },
+
+  "sign_trade": {
+    "_description": "签约交易标记",
+    "field": "ISSIGNTRADE",
+    "value": 0,
+    "meaning": "签约交易（ISSIGNTRADE=0 表示签约交易）"
+  },
+
+  "app_id": {
+    "_description": "业务系统ID映射",
+    "rules": [
+      { "keywords": ["外汇", "外汇交易", "外汇买卖"], "value": 1, "meaning": "外汇业务系统" },
+      { "keywords": ["结售汇", "结汇售汇"], "value": 2, "meaning": "结售汇业务系统" }
+    ],
+    "default": null
+  },
+
+  "bank_field": {
+    "_description": "客户名称字段映射",
+    "table": "XF_BASE_BANK",
+    "field": "DIPNAME",
+    "meaning": "客户名称",
+    "usage": "用于 JOIN 或 WHERE 条件筛选指定客户的交易记录"
+  },
+
+  "date_field": {
+    "_description": "日期字段映射 — TRADEDATE 为 NUMBER(8) 类型，格式 YYYYMMDD",
+    "field": "TRADEDATE",
+    "type": "NUMBER",
+    "format": "YYYYMMDD",
+    "meaning": "交易日",
+    "usage": "日期范围筛选条件，查询时需将标准日期转换为 YYYYMMDD 格式的整数比较"
+  }
+}

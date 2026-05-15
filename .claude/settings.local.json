@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(curl -s http://localhost:8000/api/health)",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"本月即期结汇交易\"}')",
+      "Bash(pkill -f \"uvicorn backend.app:app\")",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"客户的套保率多少\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"机构的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"今年套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"工行的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"套保率排名前3的机构\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"测试客户的套保率多少\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"小鱼儿的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"今年测试客户的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H 'Content-Type: application/json' -d '{\"text\": \"套保率排名前3的客户\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H \"Content-Type: application/json\" -d '{\"text\": \"测试客户的套保率多少\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H \"Content-Type: application/json\" -d '{\"text\": \"今年测试客户的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H \"Content-Type: application/json\" -d '{\"text\": \"小鱼儿的套保率\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H \"Content-Type: application/json\" -d '{\"text\": \"套保率排名前3的客户\"}')",
+      "Bash(curl -s http://localhost:8000/api/query -H \"Content-Type: application/json\" -d '{\"text\": \"机构的套保率\"}')",
+      "Bash(pip install *)",
+      "Bash(cat /tmp/smartbi.log)",
+      "Read(//tmp/**)",
+      "Bash(lsof -ti:8000)",
+      "Bash(xargs kill)",
+      "Bash(python3 -c \" *)",
+      "Bash(uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000)",
+      "Read(//home/ywm/oracle/instantclient_21_12/**)",
+      "Read(//home/ywm/**)",
+      "Read(//opt/**)",
+      "Read(//usr/**)",
+      "Bash(taskkill /f /im uvicorn.exe)",
+      "Bash(taskkill /f /im python.exe)",
+      "Bash(python -c ' *)",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f' {m.upper\\(\\):7s} {p}'\\) for p,v in d['paths'].items\\(\\) for m in v]\")",
+      "Bash(curl -s http://localhost:8000/api/agent/query -X POST -H \"Content-Type: application/json\" -d '{\"text\":\"测试\"}')",
+      "Bash(export PYTHONPATH=\"d:/AI/smartAi/smartbi0512/.worktrees/feature-langchain-agent\")",
+      "Bash(uvicorn backend.app:app --host 0.0.0.0 --port 8000)",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" http://localhost:8000/api/agent/query -X POST -H \"Content-Type: application/json\" -d '{\"text\":\"测试\"}')"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

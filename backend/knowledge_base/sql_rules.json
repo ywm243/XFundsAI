@@ -1,0 +1,50 @@
+{
+  "views": {
+    "spot": "XF_FX_SPOTTRADE_VIEW",
+    "fwd": "XF_FX_FWDTRADE_VIEW",
+    "swap": "XF_FX_SWAPTRADE_VIEW"
+  },
+  "common_fields": [
+    "USDAMOUNT",
+    "TRADEDATE",
+    "TRADESTATUS",
+    "SPECIALSTATE",
+    "APPID",
+    "BUYORSELL",
+    "BANKID",
+    "CUSTNAME",
+    "CUSTOMERID",
+    "CUSTMAINMANAGER",
+    "CUSTMANAGERNAME"
+  ],
+  "base_conditions": {
+    "TRADESTATUS": 0,
+    "APPID": [1, 2]
+  },
+  "date_condition": {
+    "column": "TRADEDATE",
+    "type": "NUMBER",
+    "format": "YYYYMMDD",
+    "comparison": "numeric",
+    "note": "TRADEDATE is stored as NUMBER(YYYYMMDD), use direct numeric comparison with >= and <=, do NOT wrap with DATE() function."
+  },
+  "bank_lookup": {
+    "description": "Two-step institution lookup strategy: first query XF_BASE_BANK with LIKE '%name%' to find matching BANKID(s), then use the BANKID(s) to filter trades.",
+    "steps": [
+      {
+        "step": 1,
+        "action": "SELECT BANKID FROM XF_BASE_BANK WHERE BANKNAME LIKE '%目标机构名%'",
+        "note": "Use LIKE with wildcards for fuzzy matching on bank name."
+      },
+      {
+        "step": 2,
+        "action": "Use the retrieved BANKID(s) in WHERE clause: BANKID IN (...) to filter trade records.",
+        "note": "If no matching BANKID is found, return empty result directly."
+      }
+    ]
+  },
+  "union_strategy": {
+    "method": "UNION ALL",
+    "note": "Use UNION ALL to merge results from multiple view types (spot, fwd, swap) into a single result set. Each sub-query selects from one view with the same column set and filters."
+  }
+}
