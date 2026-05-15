@@ -25,7 +25,6 @@ def register(mcp: FastMCP) -> None:
         Returns:
             dict with keys: banks (list), customers (list), app_ids (list).
         """
-        # First try LLM extraction
         api_key = os.environ.get("LLM_API_KEY", "")
         base_url = os.environ.get("LLM_BASE_URL", "")
         model = os.environ.get("LLM_MODEL", "")
@@ -57,13 +56,25 @@ def register(mcp: FastMCP) -> None:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT display_name FROM rule_items "
-                        "WHERE category = 'bank_name' AND is_active = 1"
+                        """SELECT ri.keywords, ri.rule_data
+                           FROM rule_items ri
+                           JOIN rule_categories rc ON ri.category_id = rc.id
+                           WHERE rc.category = 'bank_name' AND ri.is_active = 1"""
                     )
                     for row in cur.fetchall():
-                        name = row["display_name"]
-                        if name and name in text:
-                            result["banks"].append(row["display_value"] or name)
+                        keywords = row["keywords"]
+                        if isinstance(keywords, str):
+                            keywords = json.loads(keywords)
+                        # Match by keyword list against the text
+                        if isinstance(keywords, list):
+                            for kw in keywords:
+                                if kw and kw in text:
+                                    rule_data = row["rule_data"]
+                                    if isinstance(rule_data, str):
+                                        rule_data = json.loads(rule_data)
+                                    bank_val = rule_data.get("display_value") or rule_data.get("display_name") or kw
+                                    result["banks"].append(bank_val)
+                                    break
             finally:
                 conn.close()
 

@@ -103,6 +103,23 @@ CREATE TABLE IF NOT EXISTS memory_summaries (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    request_id VARCHAR(64) NOT NULL,
+    session_id VARCHAR(128) NOT NULL,
+    raw_input TEXT NULL,
+    router_decision JSON NULL,
+    resolved_params JSON NULL,
+    sql_executed TEXT NULL,
+    result_rows INT DEFAULT 0,
+    result_hash VARCHAR(64) NULL,
+    response_to_user TEXT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_request (request_id),
+    INDEX idx_session (session_id),
+    INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 

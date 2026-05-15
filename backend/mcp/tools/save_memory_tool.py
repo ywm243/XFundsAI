@@ -14,24 +14,24 @@ def register(mcp: FastMCP) -> None:
     def save_memory(session_id: str, key: str, value: str) -> str:
         """Save a key-value memory entry for a session.
 
-        Upserts into the memory_summaries table.
+        Stores as summary_type=key, content=value in memory_summaries table.
 
         Args:
             session_id: The session identifier.
-            key: Memory key (e.g., 'last_params', 'user_preference').
-            value: JSON-encoded value string.
+            key: Memory key (maps to summary_type).
+            value: JSON-encoded value string (maps to content).
 
         Returns:
             'ok' on success, error message on failure.
         """
         conn = get_conn()
         try:
+            value_dict = json.loads(value) if isinstance(value, str) else {"data": value}
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO memory_summaries (session_id, key, value) "
-                    "VALUES (%s, %s, %s) "
-                    "ON DUPLICATE KEY UPDATE value = %s, updated_at = NOW()",
-                    (session_id, key, value, value),
+                    "INSERT INTO memory_summaries (session_id, summary_type, content) "
+                    "VALUES (%s, %s, %s)",
+                    (session_id, key, json.dumps(value_dict, ensure_ascii=False)),
                 )
             conn.commit()
             logger.info("save_memory(%s, %s): %d chars", session_id, key, len(value))
