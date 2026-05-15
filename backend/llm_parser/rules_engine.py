@@ -9,7 +9,7 @@ _rules_cache: dict | None = None
 
 
 def _load_rules() -> dict:
-    """Load rules from SQLite (with memory cache).
+    """Load rules from MySQL (with memory cache).
 
     Returns the same nested dict format as the old semantic_rules.json,
     so gatekeep() doesn't need to change.
@@ -22,11 +22,11 @@ def _load_rules() -> dict:
 
 
 def reload_rules() -> None:
-    """Clear cache so next request reloads from SQLite."""
+    """Clear cache so next request reloads from MySQL."""
     global _rules_cache
     _rules_cache = None
     mysql_store.init_db()
-    logger.info("Rules engine cache cleared, will reload from SQLite on next request")
+    logger.info("Rules engine cache cleared, will reload from MySQL on next request")
 
 
 def _has_keyword(text: str, keywords: list[str]) -> bool:

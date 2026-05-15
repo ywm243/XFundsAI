@@ -160,9 +160,11 @@ def update_item(item_id: int, body: RuleItemUpdate):
         # Look up the item to find its category
         conn = mysql_store.get_conn()
         try:
-            row = conn.execute(
-                "SELECT * FROM rule_items WHERE id=?", (item_id,)
-            ).fetchone()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM rule_items WHERE id=%s", (item_id,)
+                )
+                row = cur.fetchone()
         finally:
             conn.close()
         if row:
@@ -247,7 +249,7 @@ def preview_rules(body: PreviewRequest):
 def api_reload_rules():
     """Clear all rule caches so next request picks up SQLite changes."""
     _reload_all()
-    return {"status": "ok", "message": "Rules reloaded from SQLite, caches cleared"}
+    return {"status": "ok", "message": "Rules reloaded from MySQL, caches cleared"}
 
 
 def _reload_all():

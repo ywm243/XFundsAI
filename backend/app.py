@@ -163,16 +163,18 @@ def list_sessions():
     """List all sessions with metadata (first query, turn count, etc.)."""
     conn = get_conn()
     try:
-        rows = conn.execute("""
-            SELECT s.id, s.agent_type, s.created_at, s.updated_at,
-                   (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
-                   (SELECT t.user_query FROM turns t WHERE t.session_id = s.id
-                    ORDER BY t.turn_index ASC LIMIT 1) AS first_query
-            FROM sessions s
-            WHERE s.is_active = 1
-            ORDER BY s.updated_at DESC
-            LIMIT 50
-        """).fetchall()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.id, s.agent_type, s.created_at, s.updated_at,
+                       (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
+                       (SELECT t.user_query FROM turns t WHERE t.session_id = s.id
+                        ORDER BY t.turn_index ASC LIMIT 1) AS first_query
+                FROM sessions s
+                WHERE s.is_active = 1
+                ORDER BY s.updated_at DESC
+                LIMIT 50
+            """)
+            rows = cur.fetchall()
         return [{
             "id": r["id"],
             "agent_type": r["agent_type"],
@@ -191,10 +193,11 @@ def create_new_session():
     session_id = str(uuid.uuid4())[:8]
     conn = get_conn()
     try:
-        conn.execute(
-            "INSERT INTO sessions (id, updated_at) VALUES (?, ?)",
-            (session_id, _utcnow()),
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sessions (id, updated_at) VALUES (%s, %s)",
+                (session_id, _utcnow()),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -206,16 +209,20 @@ def get_session(session_id: str):
     """Get all turns for a session."""
     conn = get_conn()
     try:
-        session_row = conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM sessions WHERE id = %s", (session_id,)
+            )
+            session_row = cur.fetchone()
         if not session_row:
             return JSONResponse(status_code=404, content={"error": "Session not found"})
 
-        turns = conn.execute(
-            "SELECT * FROM turns WHERE session_id = ? ORDER BY turn_index ASC",
-            (session_id,),
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM turns WHERE session_id = %s ORDER BY turn_index ASC",
+                (session_id,),
+            )
+            turns = cur.fetchall()
         return {
             "id": session_row["id"],
             "agent_type": session_row["agent_type"],
@@ -240,36 +247,39 @@ async def save_turn(session_id: str, request: Request):
 
     conn = get_conn()
     try:
-        # Ensure session exists
-        exists = conn.execute(
-            "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        if not exists:
-            conn.execute(
-                "INSERT INTO sessions (id, updated_at) VALUES (?, ?)",
-                (session_id, _utcnow()),
+        with conn.cursor() as cur:
+            # Ensure session exists
+            cur.execute(
+                "SELECT 1 FROM sessions WHERE id = %s", (session_id,)
             )
+            exists = cur.fetchone()
+            if not exists:
+                cur.execute(
+                    "INSERT INTO sessions (id, updated_at) VALUES (%s, %s)",
+                    (session_id, _utcnow()),
+                )
 
-        # Get next turn_index
-        max_idx = conn.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) FROM turns WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()[0]
+            # Get next turn_index
+            cur.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) FROM turns WHERE session_id = %s",
+                (session_id,),
+            )
+            max_idx = cur.fetchone()[0]
 
-        conn.execute(
-            """INSERT INTO turns (session_id, turn_index, user_query,
-               parsed_params, executed_sql, result_summary)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (session_id, max_idx + 1,
-             body.get("user_query", ""),
-             json.dumps(body.get("parsed_params"), ensure_ascii=False) if body.get("parsed_params") else None,
-             body.get("executed_sql"),
-             body.get("result_summary")),
-        )
-        conn.execute(
-            "UPDATE sessions SET updated_at = ? WHERE id = ?",
-            (_utcnow(), session_id),
-        )
+            cur.execute(
+                """INSERT INTO turns (session_id, turn_index, user_query,
+                   parsed_params, executed_sql, result_summary)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (session_id, max_idx + 1,
+                 body.get("user_query", ""),
+                 json.dumps(body.get("parsed_params"), ensure_ascii=False) if body.get("parsed_params") else None,
+                 body.get("executed_sql"),
+                 body.get("result_summary")),
+            )
+            cur.execute(
+                "UPDATE sessions SET updated_at = %s WHERE id = %s",
+                (_utcnow(), session_id),
+            )
         conn.commit()
         return {"status": "ok", "turn_index": max_idx + 1}
     finally:
@@ -281,9 +291,10 @@ def delete_session(session_id: str):
     """Soft-delete a session."""
     conn = get_conn()
     try:
-        conn.execute(
-            "UPDATE sessions SET is_active = 0 WHERE id = ?", (session_id,)
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sessions SET is_active = 0 WHERE id = %s", (session_id,)
+            )
         conn.commit()
         return {"status": "ok"}
     finally:

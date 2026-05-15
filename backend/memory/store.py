@@ -106,12 +106,15 @@ class AgentMemory:
         # Future: replace with Chroma vector search
         conn = mysql_store.get_conn()
         try:
-            rows = conn.execute(
-                """SELECT DISTINCT user_query, parsed_params FROM turns
-                   WHERE agent_type=? AND user_query IS NOT NULL
-                   ORDER BY created_at DESC LIMIT 200""",
-                (self.agent_type,),
-            ).fetchall()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT t.user_query, t.parsed_params
+                    FROM turns t
+                    JOIN sessions s ON s.id = t.session_id
+                    WHERE s.agent_type = %s AND t.user_query IS NOT NULL
+                    ORDER BY t.created_at DESC LIMIT 200
+                """, (self.agent_type,))
+                rows = cur.fetchall()
 
             query_words = set(query_text)
             scored = []
