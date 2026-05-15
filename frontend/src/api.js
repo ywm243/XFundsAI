@@ -21,11 +21,13 @@ export async function parseQuery(text, context) {
   return resp.json()
 }
 
-export async function executeQuery(params) {
+export async function executeQuery(params, context) {
+  const body = { params }
+  if (context) body.context = context
   const resp = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ params }),
+    body: JSON.stringify(body),
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}))

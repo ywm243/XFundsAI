@@ -142,9 +142,19 @@ async function handleSend(text) {
         return
       }
       // 直接执行查询
-      const result = await executeQuery(parseResult.params)
+      const result = await executeQuery(parseResult.params, context)
       if (result.error) {
         messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
+        return
+      }
+      // 同比/环比需要用户确认日期
+      if (result.confirm_date) {
+        messages[botIdx] = {
+          type: 'bot',
+          mode: 'confirm',
+          params: result.params,
+          pipeline: parseResult.pipeline,
+        }
         return
       }
       messages[botIdx] = {

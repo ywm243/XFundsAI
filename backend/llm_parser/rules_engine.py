@@ -174,14 +174,6 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
             parsed["comparison"] = cmp
             overrides.append(f"comparison={cmp}")
 
-    # ---- 对比无日期兜底 ----
-    if parsed.get("comparison") and not (parsed.get("date_start") and parsed.get("date_end")):
-        from datetime import date as _today
-        today = _today.today()
-        parsed["date_start"] = today.strftime("%Y-%m-01")
-        parsed["date_end"] = today.strftime("%Y-%m-%d")
-        overrides.append(f"date_default_for_comparison [{parsed['date_start']}, {parsed['date_end']}]")
-
     if overrides:
         logger.info("Gatekeep overrides: %s", "; ".join(overrides))
 

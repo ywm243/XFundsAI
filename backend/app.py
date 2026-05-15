@@ -358,13 +358,13 @@ async def query(request: Request):
     body = await request.json()
     text = body.get("text", "")
     pre_parsed = body.get("params")  # 前端确认卡传来的结构化参数
+    context = body.get("context")     # 多轮对话上下文
 
     sql = None
     parsed = {}
 
     try:
         if pre_parsed:
-            # 新方式：前端已确认参数，跳过解析直接使用
             parsed = pre_parsed
             logger.info("Using pre-parsed params from frontend")
         else:
@@ -383,6 +383,27 @@ async def query(request: Request):
                 else:
                     parsed = gatekeep(rule_parsed, text)
                     logger.info("Rule fallback (LLM failed, confidence=%.0%%)", confidence)
+
+        # ---- 同比/环比缺少日期时从上下文继承 ----
+        if parsed.get("comparison") and not (parsed.get("date_start") and parsed.get("date_end")):
+            inherited = _inherit_dates_from_context(context)
+            if inherited:
+                parsed["date_start"] = inherited["date_start"]
+                parsed["date_end"] = inherited["date_end"]
+                logger.info("Inherited dates from context: %s ~ %s", inherited["date_start"], inherited["date_end"])
+            else:
+                return {
+                    "params": parsed,
+                    "columns": [],
+                    "rows": [],
+                    "row_count": 0,
+                    "comparison": None,
+                    "summary": "",
+                    "chartOption": {},
+                    "insights": [],
+                    "error": "",
+                    "confirm_date": True,
+                }
 
         # Normalize empty values before passing to builder
         buy_sell = parsed["buy_sell"] or None
@@ -529,6 +550,28 @@ async def query(request: Request):
 
 
 # ---- Result enrichment helpers ----
+
+def _inherit_dates_from_context(context: list | None) -> dict | None:
+    """Try to inherit date range from the most recent assistant turn in context.
+
+    Returns {date_start, date_end} or None if no dates found.
+    """
+    if not context:
+        return None
+    # Walk context in reverse to find the most recent assistant parsed params
+    for msg in reversed(context):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            try:
+                prev = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            ds = prev.get("date_start", "") or ""
+            de = prev.get("date_end", "") or ""
+            if ds and de:
+                return {"date_start": ds, "date_end": de}
+    return None
+
 
 def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None) -> str:
     """Generate a natural-language summary from query results."""
