@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 import platform
 if platform.system() == "Windows":
-    IC_DIR = r"D:\soft\instantclient\instantclient_19_19"
+    IC_DIR = r"C:\instantclient_19_30"
 else:
     IC_DIR = "/home/ywm/oracle/instantclient_21_12"
 _config = DBConfig()
