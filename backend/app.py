@@ -1104,10 +1104,19 @@ async def api_chat(request: Request):
             "error": final.get("error", ""),
         }
 
-        if router_status in ("rejected",):
+        if router_status == "rejected":
             return JSONResponse(
                 status_code=422,
                 content=result | {"summary": router_decision.get("message", "")},
+            )
+
+        if router_status == "confirm":
+            return JSONResponse(
+                status_code=200,
+                content=result | {
+                    "summary": router_decision.get("message", "请确认查询参数"),
+                    "confirm_needed": router_decision.get("needs_confirm", []),
+                },
             )
 
         return result

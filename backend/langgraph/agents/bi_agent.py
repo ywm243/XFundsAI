@@ -3,7 +3,7 @@
 
 import logging
 from langgraph.graph import StateGraph
-from llm_parser.parser import rule_based_parse, _rule_confidence
+from llm_parser.parser import rule_based_parse, _rule_confidence, compute_comparison_dates
 from llm_parser.rules_engine import gatekeep
 from llm_parser.llm_client import llm_parse
 from llm_parser.prompt_builder import build_system_prompt
@@ -155,11 +155,64 @@ def _node_execute(state: AgentState) -> dict:
 
 
 def _node_build_comparison(state: AgentState) -> dict:
-    """Build comparison data from existing rows (already enriched by SQL)."""
-    # Comparison is already computed in the query SQL for ranking queries.
-    # For aggregate queries, the comparison data comes from a second SQL.
-    # For Phase 2, we skip re-computation and pass through.
-    return {}
+    """Build comparison data: compute YoY/MoM via second SQL execution."""
+    parsed = state.parsed_params
+    comparison = parsed.get("comparison") if parsed else None
+    rows = state.rows
+    sql = state.sql
+
+    if not comparison or not sql or not rows:
+        return {}
+
+    date_start = parsed.get("date_start") or ""
+    date_end = parsed.get("date_end") or ""
+    if not date_start or not date_end:
+        return {}
+
+    cmp_start, cmp_end = compute_comparison_dates(date_start, date_end, comparison)
+    if not cmp_start or not cmp_end:
+        return {}
+
+    try:
+        # Build comparison SQL with shifted dates
+        from app import _build_comparison_sql, _compute_comparison, _merge_comparison_into_rows
+
+        cmp_sql = _build_comparison_sql(parsed, sql, cmp_start, cmp_end)
+        if not cmp_sql:
+            return {}
+
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(cmp_sql)
+                cmp_cols = [desc[0] for desc in cur.description] if cur.description else []
+                cmp_rows = [list(row) for row in cur.fetchall()]
+
+        if not cmp_rows:
+            return {}
+
+        comparison_data = _compute_comparison(
+            current_rows=rows, compare_rows=cmp_rows,
+            comparison=comparison,
+            date_start=date_start, date_end=date_end,
+            cmp_start=cmp_start, cmp_end=cmp_end,
+        )
+
+        # Merge per-row comparison data into columns
+        if comparison_data and cmp_rows:
+            cmp_label = comparison_data.get("label", "对比")
+            merged_cols, merged_rows = _merge_comparison_into_rows(
+                rows, cmp_rows, state.columns, cmp_label
+            )
+            return {
+                "comparison": comparison_data,
+                "columns": merged_cols,
+                "rows": merged_rows,
+            }
+
+        return {"comparison": comparison_data}
+    except Exception as exc:
+        logger.warning("build_comparison failed: %s", exc)
+        return {}
 
 
 def _node_format(state: AgentState) -> dict:
