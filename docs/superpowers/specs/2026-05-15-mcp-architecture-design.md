@@ -50,70 +50,154 @@
 | 层 | 框架 | 做什么 | 不做什么 |
 |----|------|--------|---------|
 | 网关层 | FastAPI | 认证、会话管理、SSE 流式推送、静态文件服务 | 不解析业务、不知道有哪些 Agent、不路由 |
-| 编排层 | LangGraph 1.1 | Agent 注册、文本→Agent 智能路由、串行/并行 DAG 执行、跨 Agent 上下文共享 | 不直接连数据库、不管理前端状态 |
+| 编排层 | LangGraph 1.1 | Context Resolver（LLM 上下文解析）、Agent 注册、智能路由、串行/并行 DAG 执行、跨 Agent 上下文共享 | 不直接连数据库、不管理前端状态 |
 | 工具层 | FastMCP | 暴露 Oracle/MySQL/LLM 为标准工具，LLM 可自主发现和调用 | 不做业务编排、不管理 Agent 生命周期 |
 
 ---
 
-## 3. 数据流示例
+## 3. Context Resolver — 上下文解析器
 
-用户连续两轮对话，以"本月工行交易量"→"同比增加多少"为例：
+### 3.1 为什么不能简单取上一条
 
-### 第一轮："本月工行交易量"
-
-```
-前端 POST /api/chat { message: "本月工行交易量", session_id: "s1" }
-  │
-  ▼
-[网关层] 
-  1. 校验 session_id，加载历史上下文
-  2. 建立 SSE 通道
-  3. 转发 { text, context, session_id } 到编排层
-  │
-  ▼
-[编排层 - Router Node]
-  分析文本 → "交易量、工行" → BI=0.9, 询报价=0.0, 风控=0.1
-  路由决策 → BI Agent
-  │
-  ▼
-[BI Agent 子图]
-  Step 1: MCP.tool.load_rules("all")          → 规则库
-  Step 2: 规则解析 "本月工行交易量"             → { bank_name: "工商银行", aggregate: true, date_start: "2026-05-01", date_end: "2026-05-15" }
-  Step 3: MCP.tool.build_sql(params)          → Oracle SQL
-  Step 4: MCP.tool.oracle_query(sql)          → rows
-  Step 5: MCP.tool.build_summary(rows, params) → 自然语言摘要
-  │
-  ▼
-  结果写入 LangGraph State，返回网关层
-  │
-  ▼
-[网关层] SSE 推送结果到前端
-```
-
-### 第二轮："同比增加多少"
+上下文继承必须是 LLM 分析**全部对话**后智能推断，不能机械取最近的 assistant 消息。
 
 ```
-编排层从 State 中读取上一轮的 { date_start: "2026-05-01", date_end: "2026-05-15" }
-自动注入到 BI Agent → 不需要用户重复"这个月"
-无需日期时 → 网关返回 confirm_date，前端弹确认卡
+场景 A：同一主题多轮（应该继承）
+  T1: "本月工行交易量"        → { date: 2026-05, bank: "工行" }
+  T2: "农行呢"                → 继承 date，只换 bank
+  T3: "同比增加多少"           → 继承 T1/T2 的 date+bank，加 comparison
+  → LLM 应输出：date=本月, bank=农行, comparison=yoy
+
+场景 B：主题切换（不应继承）
+  T1: "本月工行交易量"        → { date: 2026-05, bank: "工行" }
+  T2: "美元即期汇率多少"      → 主题切换为汇率，不应继承 bank
+  T3: "同比增加多少"           → 这里需要 LLM 判断"同比谁"
+  → LLM 应输出：date=本月, comparison=yoy, 但不确定实体 → 返回 confirm
+
+场景 C：跨度继承
+  T1: "今年一季度交易量"      → { date: 2026-01~03 }
+  T2: "排名前5的银行"         → 继承 date
+  T3: "它们的套保率呢"        → 继承 date + 排名银行
+  T4: "跟去年同比"             → 继承全部 + comparison
+  → LLM 应输出：date=一季度, banks=前5, comparison=yoy
+
+场景 D：指代消解
+  T1: "工行和农行本月交易量"  → { banks: ["工行","农行"], date: 本月 }
+  T2: "中行呢"                → "呢" 表示"加到对比"，不是替换
+  → LLM 应输出：banks=["工行","农行","中行"], date=本月
 ```
 
-### 并行示例（未来，Phase 3+）
+### 3.2 Context Resolver 节点
+
+在编排层中，Router 之前插入一个 Context Resolver 节点：
 
 ```
-用户："对比工行、农行、中行的交易量"
 编排层 DAG:
-  ┌─ query("工行") ─┐
-  ├─ query("农行") ─┤ → merge → build_summary → 返回
-  └─ query("中行") ─┘
-3 个子任务并行执行，汇总后一次返回
+  Gateway Adapter → Context Resolver → Router → Agent(s) → Result Merge
+                       │
+                       ├─ 输入: session_id, text, full_history (最近 20 轮)
+                       ├─ 输出: resolved_params (合并了继承参数的完整参数)
+                       └─ 实现: LLM 分析全部历史 → 结构化输出
+```
+
+Context Resolver 给 LLM 的系统提示：
+
+```
+你是对话上下文分析器。根据完整对话历史，推断当前查询的完整参数。
+
+## 上下文继承规则
+1. 如果当前查询的实体/日期/维度为空，向前查找最近的相关轮次
+2. 如果中途切换了主题（如从交易量→汇率），不要继承无关参数
+3. "呢""它们的""也"等词表示承接上文
+4. 不确定的参数留空，不要猜
+
+## 完整对话历史
+{history}
+
+## 当前查询
+{text}
+
+## 输出 JSON
+{ "resolved": { "date_start": "...", "date_end": "...", "bank_name": "...",
+                "product_type": "...", "comparison": "...", ... },
+  "inherited_fields": ["date_start", "date_end"],  // 哪些字段来自上下文
+  "confidence": 0.95,
+  "needs_confirm": []  // 需要追问确认的字段
+}
+```
+
+### 3.3 Context Resolver 输出处理
+
+```
+Context Resolver 输出
+  │
+  ├─ needs_confirm 非空 → 返回前端确认卡
+  │   例: ["bank_name"] → "你想看哪家银行的同比？"
+  │
+  ├─ confidence < 0.8  → LLM 二次确认
+  │   例: "同比增加多少" + 历史有银行和汇率两个主题 → 不确定
+  │
+  └─ confidence >= 0.8 → resolved_params 传给 Router
+      Router 做能力校验，通过后传给 Agent
 ```
 
 ---
 
-## 4. Router 安全决策框架
+## 4. 数据流示例
 
-### 4.1 三层门禁（智能路由）
+### 4.1 单轮查询
+
+```
+用户: "本月工行交易量"
+
+[网关层] → 建立 SSE，转发请求到编排层
+
+[编排层]
+  Context Resolver → 无历史，直接解析
+  Router → 门禁 1(关键词 BI=3) ✓ → 门禁 2(工行存在) ✓ → 门禁 3(参数齐全) ✓
+  BI Agent → 执行查询 → 返回结果
+
+[网关层] → SSE 推送结果
+```
+
+### 4.2 多轮上下文继承
+
+```
+T1: "本月工行交易量"       → BI 返回数据
+T2: "农行呢"               → Context Resolver: 继承 date，bank→农行 → BI 返回
+T3: "同比增加多少"          → Context Resolver: 继承 T1/T2 的 date+bank，加 comparison
+                              → BI 执行同比对比 → 返回
+```
+
+### 4.3 并行查询
+
+```
+用户: "对比工行、农行、中行的交易量"
+
+Context Resolver → 拆解为 3 个独立子查询
+Router → 每个子查询通过门禁 → 验证零依赖
+编排层 DAG:
+  ┌─ query("工行") ─┐
+  ├─ query("农行") ─┤ → merge → build_summary → 返回
+  └─ query("中行") ─┘
+```
+
+### 4.4 串行查询
+
+```
+用户: "农行本月交易量下降多少，什么原因"
+
+Context Resolver → 拆解为串行步骤
+Router → Step 1: BI Agent → { change: -20% }
+         Step 2: 风控 Agent(change=-20%) → 原因分析
+Fan-in → 合并返回
+```
+
+---
+
+## 5. Router 安全决策框架
+
+### 5.1 三层门禁（智能路由）
 
 每个查询必须通过三道门禁才能路由到 Agent 执行：
 
@@ -172,7 +256,7 @@
              可以查询历史交易数据或汇率报价。"
 ```
 
-### 4.2 并行硬条件
+### 5.2 并行硬条件
 
 触发并行的三个必要条件，缺一不可：
 
@@ -207,7 +291,7 @@
   结论：只执行 BI，拒答第二部分
 ```
 
-### 4.3 串行硬条件
+### 5.3 串行硬条件
 
 触发串行的三个必要条件：
 
@@ -240,7 +324,7 @@
     → 先追问确认，不直接分析
 ```
 
-### 4.4 Agent 能力声明
+### 5.4 Agent 能力声明
 
 每个 Agent 注册时必须声明 `capabilities` 和 `NOT capabilities`：
 
@@ -310,7 +394,7 @@ Router 做决策时：
 - `capabilities` 匹配 → 通过门禁 3
 - `NOT_capabilities` 命中 → **直接拒答**，不调 LLM
 
-### 4.5 Router 输出三种状态
+### 5.5 Router 输出三种状态
 
 ```python
 # 状态 1: 成功路由
@@ -347,7 +431,7 @@ Router 做决策时：
 
 ---
 
-## 5. Agent 规划
+## 6. Agent 规划
 
 | Agent | 职责 | 状态 |
 |-------|------|------|
@@ -365,7 +449,7 @@ Router 做决策时：
 
 ---
 
-## 6. MCP 工具清单
+## 7. MCP 工具清单
 
 ### Phase 1（本次实现）
 
@@ -388,7 +472,7 @@ Router 做决策时：
 
 ---
 
-## 7. FastMCP 技术选型
+## 8. FastMCP 技术选型
 
 **选型：** `mcp` Python SDK + `FastMCP`
 
@@ -439,7 +523,7 @@ app.mount("/mcp", mcp.http_app())
 
 ---
 
-## 8. Phase 1 实现范围
+## 9. Phase 1 实现范围
 
 **原则：** 不碰现有代码，新增独立目录，两条线并行运行。
 
@@ -468,18 +552,18 @@ backend/
 
 ---
 
-## 9. 落地节奏
+## 10. 落地节奏
 
 | Phase | 内容 | 产出 |
 |-------|------|------|
 | Phase 1 | MCP 工具层 — 3 个工具封好 + 挂 FastAPI | MCP Server 可独立运行 |
-| Phase 2 | LangGraph 编排层 + BI Agent 迁移到 MCP | BI Agent 通过 MCP 工具执行 |
+| Phase 2 | LangGraph 编排层（Context Resolver + Router + BI Agent 迁移） | BI Agent 通过 MCP 工具执行，上下文智能继承 |
 | Phase 3 | 接入第二个 Agent（询报价），验证串行/并行/路由 | 多 Agent 协同 |
 | Phase 4 | 批量接入剩余 5-6 个 Agent | 完整多 Agent 系统 |
 
 ---
 
-## 10. 风险评估
+## 11. 风险评估
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
