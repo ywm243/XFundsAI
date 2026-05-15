@@ -292,7 +292,7 @@ async def save_turn(session_id: str, request: Request):
                  body.get("user_query", ""),
                  json.dumps(body.get("parsed_params"), ensure_ascii=False) if body.get("parsed_params") else None,
                  body.get("executed_sql"),
-                 body.get("result_summary")),
+                 (body.get("result_summary") or "")[:10000] or None),
             )
             cur.execute(
                 "UPDATE sessions SET updated_at = %s WHERE id = %s",
@@ -343,8 +343,9 @@ async def api_parse(request: Request):
         confidence = _rule_confidence(text, rule_parsed)
 
         # Step 2: Route based on confidence
-        if confidence >= 0.8:
-            # High confidence — skip LLM, save API call
+        if confidence >= 0.8 or context:
+            # High confidence or multi-turn context — skip LLM, use rules
+            # (context provides the specific params, LLM adds no value for follow-ups)
             parsed = gatekeep(rule_parsed, text)
             pipeline = f"rule(confidence={confidence:.0%})"
         else:
@@ -389,7 +390,7 @@ async def query(request: Request):
             # 解析方式：规则先行 + 置信度分流
             rule_parsed = rule_based_parse(text)
             confidence = _rule_confidence(text, rule_parsed)
-            if confidence >= 0.8:
+            if confidence >= 0.8 or context:
                 parsed = gatekeep(rule_parsed, text)
                 logger.info("Rule-only pipeline used (confidence=%.0%%)", confidence)
             else:
@@ -574,7 +575,7 @@ def _inherit_dates_from_context(context: list | None) -> dict | None:
 
     Returns {date_start, date_end} or None if no dates found.
     """
-    if not context:
+    if not context or not isinstance(context, list):
         return None
     # Walk context in reverse to find the most recent assistant parsed params
     for msg in reversed(context):
