@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_ENV_FILE, override=True)
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,8 +34,24 @@ init_db()
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Smart BI", version="1.0.0")
+from mcp.server import create_http_app, get_session_manager
+_mcp_asgi = create_http_app()
+
+
+@asynccontextmanager
+async def _mcp_lifespan(app: FastAPI):
+    """Run MCP session manager lifecycle."""
+    sm = get_session_manager()
+    if sm is not None:
+        async with sm.run():
+            yield
+    else:
+        yield
+
+
+app = FastAPI(title="Smart BI", version="1.0.0", lifespan=_mcp_lifespan)
 app.include_router(admin_router)
+app.mount("/mcp", _mcp_asgi)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -566,8 +583,10 @@ def _inherit_dates_from_context(context: list | None) -> dict | None:
                 prev = json.loads(content)
             except (json.JSONDecodeError, TypeError):
                 continue
-            ds = prev.get("date_start", "") or ""
-            de = prev.get("date_end", "") or ""
+            # Dates may be nested inside "params" (API response format)
+            prev_data = prev.get("params", prev)
+            ds = prev_data.get("date_start", "") or prev.get("date_start", "") or ""
+            de = prev_data.get("date_end", "") or prev.get("date_end", "") or ""
             if ds and de:
                 return {"date_start": ds, "date_end": de}
     return None
@@ -1032,3 +1051,77 @@ def index():
 _dist_assets = FRONTEND_DIR / "dist" / "assets"
 if _dist_assets.exists():
     app.mount("/assets", StaticFiles(directory=str(_dist_assets)), name="assets")
+
+
+# ---- LangGraph orchestration endpoint ----
+
+from langgraph.pipeline import build_main_graph
+_langgraph_app = build_main_graph()
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """Run the LangGraph orchestration pipeline.
+
+    Parallel to /api/query — both return the same ResultCard-compatible format.
+    """
+    from langgraph.state import AgentState
+
+    body = await request.json()
+    text = body.get("text", "")
+    session_id = body.get("session_id", "")
+    context = body.get("context")
+
+    state = AgentState(
+        request_id=str(uuid.uuid4())[:8],
+        session_id=session_id,
+        user_text=text,
+        context=context,
+    )
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_ENV_FILE, override=True)
+
+        final = await _langgraph_app.ainvoke(state)
+
+        router_decision = final.get("router_decision", {})
+        router_status = router_decision.get("status", "ok") if router_decision else "ok"
+
+        result = {
+            "sql": final.get("sql", ""),
+            "params": final.get("parsed_params", {}),
+            "columns": final.get("columns", []),
+            "rows": final.get("rows", []),
+            "row_count": final.get("row_count", 0),
+            "comparison": final.get("comparison"),
+            "summary": final.get("summary", ""),
+            "chartOption": final.get("chart_option"),
+            "insights": final.get("insights", []),
+            "validation_warnings": final.get("validation_warnings", []),
+            "sql_validated": final.get("sql_validated", False),
+            "router_decision": router_decision,
+            "error": final.get("error", ""),
+        }
+
+        if router_status in ("rejected",):
+            return JSONResponse(
+                status_code=422,
+                content=result | {"summary": router_decision.get("message", "")},
+            )
+
+        return result
+    except Exception as exc:
+        logger.exception("LangGraph /api/chat failed: %s", text)
+        return JSONResponse(status_code=500, content={
+            "error": f"{type(exc).__name__}: {exc}",
+            "sql": "",
+            "params": {},
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "comparison": None,
+            "summary": "",
+            "chartOption": {},
+            "insights": [],
+        })
