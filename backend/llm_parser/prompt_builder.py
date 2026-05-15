@@ -3,14 +3,14 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
-from db import sqlite_store
+from db import mysql_store
 
 _cache: str | None = None
 
 
 def _load_rules() -> dict:
     """Load rules from SQLite."""
-    return sqlite_store.load_rules_from_db()
+    return mysql_store.load_rules_from_db()
 
 
 def _render_buy_sell(rules: list[dict]) -> str:

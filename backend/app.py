@@ -23,12 +23,12 @@ from llm_parser.rules_engine import gatekeep, reload_rules
 from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
 from db.query_builder import TradeQueryBuilder
 from db.connection import get_db
-from db.sqlite_store import init_db, get_conn
+from db.mysql_store import init_db, get_conn
 from admin_routes import router as admin_router
 import uuid
 from datetime import datetime
 
-# Initialize SQLite on startup
+# Initialize store on startup
 init_db()
 
 logger = logging.getLogger(__name__)

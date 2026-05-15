@@ -1,7 +1,7 @@
 import logging
 
 from . import parser as _parser
-from db import sqlite_store
+from db import mysql_store
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ def _load_rules() -> dict:
     global _rules_cache
     if _rules_cache is not None:
         return _rules_cache
-    _rules_cache = sqlite_store.load_rules_from_db()
+    _rules_cache = mysql_store.load_rules_from_db()
     return _rules_cache
 
 
@@ -25,7 +25,7 @@ def reload_rules() -> None:
     """Clear cache so next request reloads from SQLite."""
     global _rules_cache
     _rules_cache = None
-    sqlite_store.init_db()
+    mysql_store.init_db()
     logger.info("Rules engine cache cleared, will reload from SQLite on next request")
 
 

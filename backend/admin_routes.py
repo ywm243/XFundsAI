@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from db import sqlite_store
+from db import mysql_store
 from llm_parser.parser import rule_based_parse, _rule_confidence
 from llm_parser.rules_engine import gatekeep, reload_rules
 from llm_parser.prompt_builder import invalidate_cache
@@ -22,7 +22,7 @@ def _validate_rule_item(category: dict, keywords: list[str], rule_data: dict,
     errors = []
 
     # Uniqueness check
-    existing_items = sqlite_store.get_items(category["id"])
+    existing_items = mysql_store.get_items(category["id"])
     existing_kw = {}
     for item in existing_items:
         if item_id and item["id"] == item_id:
@@ -96,10 +96,10 @@ class PreviewRequest(BaseModel):
 @router.get("/rules/categories")
 def list_categories(agent_type: str | None = None):
     """List all rule categories, optionally filtered by agent_type."""
-    cats = sqlite_store.get_categories(agent_type)
+    cats = mysql_store.get_categories(agent_type)
     result = []
     for c in cats:
-        items = sqlite_store.get_items(c["id"])
+        items = mysql_store.get_items(c["id"])
         result.append({
             **c,
             "item_count": len(items),
@@ -113,10 +113,10 @@ def list_categories(agent_type: str | None = None):
 @router.get("/rules/categories/{category_id}/items")
 def list_items(category_id: int):
     """Get all rule items for a category."""
-    cat = sqlite_store.get_category(category_id)
+    cat = mysql_store.get_category(category_id)
     if not cat:
         raise HTTPException(404, "Category not found")
-    items = sqlite_store.get_items(category_id)
+    items = mysql_store.get_items(category_id)
     # Parse JSON fields for frontend
     for item in items:
         try:
@@ -133,7 +133,7 @@ def list_items(category_id: int):
 @router.post("/rules/categories/{category_id}/items")
 def create_item(category_id: int, body: RuleItemCreate):
     """Add a new rule item."""
-    cat = sqlite_store.get_category(category_id)
+    cat = mysql_store.get_category(category_id)
     if not cat:
         raise HTTPException(404, "Category not found")
 
@@ -142,7 +142,7 @@ def create_item(category_id: int, body: RuleItemCreate):
     if errors:
         raise HTTPException(422, detail="; ".join(errors))
 
-    item_id = sqlite_store.add_item(
+    item_id = mysql_store.add_item(
         category_id=category_id,
         keywords=body.keywords,
         rule_data=body.rule_data,
@@ -158,7 +158,7 @@ def update_item(item_id: int, body: RuleItemUpdate):
     # Validate if keywords or rule_data are being updated
     if body.keywords is not None or body.rule_data is not None:
         # Look up the item to find its category
-        conn = sqlite_store.get_conn()
+        conn = mysql_store.get_conn()
         try:
             row = conn.execute(
                 "SELECT * FROM rule_items WHERE id=?", (item_id,)
@@ -166,7 +166,7 @@ def update_item(item_id: int, body: RuleItemUpdate):
         finally:
             conn.close()
         if row:
-            cat = sqlite_store.get_category(row["category_id"])
+            cat = mysql_store.get_category(row["category_id"])
             keywords = body.keywords or []
             rule_data = body.rule_data or {}
             is_ironclad = body.is_ironclad if body.is_ironclad is not None else False
@@ -174,7 +174,7 @@ def update_item(item_id: int, body: RuleItemUpdate):
             if errors:
                 raise HTTPException(422, detail="; ".join(errors))
 
-    ok = sqlite_store.update_item(
+    ok = mysql_store.update_item(
         item_id=item_id,
         keywords=body.keywords,
         rule_data=body.rule_data,
@@ -190,7 +190,7 @@ def update_item(item_id: int, body: RuleItemUpdate):
 @router.delete("/rules/items/{item_id}")
 def delete_item(item_id: int):
     """Soft-delete a rule item."""
-    ok = sqlite_store.delete_item(item_id)
+    ok = mysql_store.delete_item(item_id)
     if not ok:
         raise HTTPException(404, "Item not found")
     return {"id": item_id, "status": "deleted"}
@@ -201,17 +201,17 @@ def delete_item(item_id: int):
 @router.get("/rules/categories/{category_id}/versions")
 def list_versions(category_id: int):
     """Get version history for a category."""
-    cat = sqlite_store.get_category(category_id)
+    cat = mysql_store.get_category(category_id)
     if not cat:
         raise HTTPException(404, "Category not found")
-    versions = sqlite_store.get_versions(category_id)
+    versions = mysql_store.get_versions(category_id)
     return {"category": cat, "versions": versions}
 
 
 @router.post("/rules/categories/{category_id}/rollback")
 def rollback_category(category_id: int, version_num: int):
     """Rollback a category to a specific version."""
-    ok = sqlite_store.rollback_category(category_id, version_num)
+    ok = mysql_store.rollback_category(category_id, version_num)
     if not ok:
         raise HTTPException(404, f"Version {version_num} not found")
     # Clear caches so changes take effect

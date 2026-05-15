@@ -7,7 +7,7 @@ Supports: session CRUD, turn recording, context retrieval, memory summaries.
 import logging
 from typing import Optional
 
-from db import sqlite_store
+from db import mysql_store
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class AgentMemory:
     # ---- Session ----
 
     def ensure_session(self, session_id: str, user_id: str = "default") -> None:
-        sqlite_store.create_session(session_id, self.agent_type, user_id)
+        mysql_store.create_session(session_id, self.agent_type, user_id)
 
     # ---- Turns ----
 
@@ -38,7 +38,7 @@ class AgentMemory:
                  result_summary: str | None = None,
                  user_feedback: str | None = None) -> int:
         """Record a conversation turn. Returns turn id."""
-        return sqlite_store.add_turn(
+        return mysql_store.add_turn(
             session_id=session_id,
             turn_index=turn_index,
             user_query=user_query,
@@ -50,7 +50,7 @@ class AgentMemory:
 
     def get_context(self, session_id: str, last_n: int = 3) -> list[dict]:
         """Get the last N turns for LLM context injection."""
-        turns = sqlite_store.get_session_context(session_id, last_n)
+        turns = mysql_store.get_session_context(session_id, last_n)
         return turns
 
     def build_context_prompt(self, session_id: str, last_n: int = 3) -> str:
@@ -76,7 +76,7 @@ class AgentMemory:
 
     def get_turn_count(self, session_id: str) -> int:
         """Get the number of turns in a session."""
-        turns = sqlite_store.get_session_context(session_id, last_n=1000)
+        turns = mysql_store.get_session_context(session_id, last_n=1000)
         return len(turns)
 
     # ---- Summaries ----
@@ -89,7 +89,7 @@ class AgentMemory:
     def add_summary(self, session_id: str, summary_type: str,
                     content: dict, source_turns: str | None = None) -> int:
         """Store a memory summary."""
-        return sqlite_store.add_summary(
+        return mysql_store.add_summary(
             session_id=session_id,
             summary_type=summary_type,
             content=content,
@@ -105,7 +105,7 @@ class AgentMemory:
         # For now, use keyword overlap on the query text
         # Future: replace with Chroma vector search
         import sqlite3
-        conn = sqlite_store.get_conn()
+        conn = mysql_store.get_conn()
         try:
             rows = conn.execute(
                 """SELECT DISTINCT user_query, parsed_params FROM turns
