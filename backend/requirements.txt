@@ -8,3 +8,4 @@ langchain-community>=0.4.1
 langchain-openai>=1.2.1
 langchain-experimental>=0.4.1
 langgraph>=1.1.10
+pymysql>=1.4.0
