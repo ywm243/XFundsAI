@@ -116,10 +116,10 @@ test("Q2 has rows (section 4)", isinstance(second.get("rows"), list))
 test("summary mentions 同比", "同比" in second.get("summary", ""))
 test("summary mentions comparison change", "+" in second.get("summary", "") or "-" in second.get("summary", ""))
 
-# Insights mention comparison
+# Insights mention comparison (template insight type is "growth"/"risk")
 insights = second.get("insights", [])
 if insights:
-    has_cmp_insight = any(i.get("type") == "comparison" for i in insights)
+    has_cmp_insight = any(i.get("type") in ("growth", "risk") for i in insights)
     test("insights has comparison type", has_cmp_insight)
 
 # ========================================================================

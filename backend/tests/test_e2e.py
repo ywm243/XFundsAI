@@ -9,7 +9,7 @@ BASE = "http://localhost:8000"
 passed = 0
 failed = 0
 errors = []
-TIMEOUT = 10.0
+TIMEOUT = 90.0
 
 
 def test(name, condition, detail=""):

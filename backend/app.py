@@ -97,6 +97,33 @@ def _safe_truncate(text: str, max_chars: int = _RESULT_MAX_CHARS) -> str:
     return truncated
 
 
+def _compute_importance(user_query: str, parsed_params: dict | None = None) -> int:
+    """Score a turn's importance from 1 (routine) to 5 (critical).
+
+    Factors: comparison queries, multi-filter specificity, aggregation,
+    hedge ratio, query length.
+    """
+    score = 1  # baseline
+    if not parsed_params:
+        return min(score, 5)
+
+    if parsed_params.get("comparison"):
+        score += 1                      # 同比/环比查询更关键
+    if parsed_params.get("aggregate") or parsed_params.get("top_n"):
+        score += 1                      # 聚合/排名有分析价值
+    if parsed_params.get("hedge_ratio"):
+        score += 1                      # 套保率是高级分析
+    filters = sum(1 for k in ("bank_name", "cust_name", "appid",
+                               "special_states", "amount_filter")
+                  if parsed_params.get(k))
+    if filters >= 2:
+        score += 1                      # 多维度过滤 → 查询更具体
+    if len(user_query) > 15:
+        score += 1                      # 详细提问 → 更有价值
+
+    return min(score, 5)
+
+
 def _build_sql(parsed, date_start=None, date_end=None):
     """Build SQL from parsed params with given date range.
 
@@ -104,6 +131,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
     """
     buy_sell = parsed.get("buy_sell") or None
     cust_name = parsed.get("cust_name") or None
+    bank_name = parsed.get("bank_name") or None
     special_states = parsed.get("special_states", "")
     if isinstance(special_states, str) and special_states:
         special_states = [s.strip() for s in special_states.split(",")]
@@ -118,7 +146,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None,
+            bank_name=bank_name,
             amount_op=amount_filter["amount_op"],
             amount_value=amount_filter["amount_value"],
             hedge_ratio=parsed.get("hedge_ratio", False),
@@ -130,7 +158,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None,
+            bank_name=bank_name,
             top_n=top_n, dimension=parsed.get("dimension", "bank"),
             hedge_ratio=parsed.get("hedge_ratio", False),
             cust_name=cust_name, appid=parsed.get("appid"),
@@ -140,7 +168,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None,
+            bank_name=bank_name,
             dimension=parsed.get("dimension", "bank"),
             cust_name=cust_name, appid=parsed.get("appid"),
         )
@@ -149,7 +177,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None,
+            bank_name=bank_name,
             cust_name=cust_name, appid=parsed.get("appid"),
             dimension=parsed.get("dimension"),
         )
@@ -158,7 +186,7 @@ def _build_sql(parsed, date_start=None, date_end=None):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None,
+            bank_name=bank_name,
             cust_name=cust_name, appid=parsed.get("appid"),
         )
 
@@ -366,6 +394,7 @@ def get_session(session_id: str):
                 "parsed_params": json.loads(t["parsed_params"]) if t["parsed_params"] else None,
                 "executed_sql": t["executed_sql"],
                 "result_summary": t["result_summary"],
+                "importance": t.get("importance", 0),
                 "user_feedback": t["user_feedback"],
                 "created_at": t["created_at"],
             } for t in turns],
@@ -376,8 +405,12 @@ def get_session(session_id: str):
 
 @app.post("/api/sessions/{session_id}/turns")
 async def save_turn(session_id: str, request: Request):
-    """Save a conversation turn to the session."""
+    """Save a conversation turn to the session, compute importance,
+    and auto-summarize every 5 turns."""
     body = await request.json()
+    user_query = body.get("user_query", "")
+    parsed_params = body.get("parsed_params")
+    importance = _compute_importance(user_query, parsed_params)
 
     conn = get_conn()
     try:
@@ -402,20 +435,46 @@ async def save_turn(session_id: str, request: Request):
 
             cur.execute(
                 """INSERT INTO turns (session_id, turn_index, user_query,
-                   parsed_params, executed_sql, result_summary)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                (session_id, max_idx + 1,
-                 body.get("user_query", ""),
-                 json.dumps(body.get("parsed_params"), ensure_ascii=False) if body.get("parsed_params") else None,
+                   parsed_params, executed_sql, result_summary, importance)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (session_id, max_idx + 1, user_query,
+                 json.dumps(parsed_params, ensure_ascii=False) if parsed_params else None,
                  body.get("executed_sql"),
-                 _safe_truncate(body.get("result_summary") or "") or None),
+                 _safe_truncate(body.get("result_summary") or "") or None,
+                 importance),
             )
             cur.execute(
                 "UPDATE sessions SET updated_at = %s WHERE id = %s",
                 (_now(), session_id),
             )
         conn.commit()
-        return {"status": "ok", "turn_index": max_idx + 1}
+
+        # ---- Auto-summarize every 5 turns ----
+        from memory.store import AgentMemory
+        memory = AgentMemory()
+        if memory.should_summarize(session_id):
+            turns = memory.get_context(session_id, last_n=5)
+            products = set()
+            has_comparison = False
+            for t in turns:
+                params = t.get("parsed_params") or {}
+                if isinstance(params, dict):
+                    pt = params.get("product_type", "")
+                    if pt:
+                        products.add(pt)
+                    if params.get("comparison"):
+                        has_comparison = True
+            memory.add_summary(session_id, "turn_group", {
+                "turn_indices": [t["turn_index"] for t in turns],
+                "queries": [t["user_query"] for t in turns],
+                "products": list(products),
+                "has_comparison": has_comparison,
+                "total_turns": max_idx + 2,
+            })
+            logger.info("Auto-summarized session %s at turn %d (importance=%d)",
+                        session_id, max_idx + 1, importance)
+
+        return {"status": "ok", "turn_index": max_idx + 1, "importance": importance}
     finally:
         conn.close()
 
@@ -605,7 +664,7 @@ async def query(request: Request):
         "comparison": comparison_data,
         "summary": _build_summary(parsed, rows, cols, comparison_data),
         "chartOption": _build_chart_option(parsed, rows, cols, comparison_data),
-        "insights": _build_insights(parsed, rows, cols, comparison_data),
+        "insights": _build_insights(parsed, rows, cols, comparison_data, text),
         "validation_warnings": [],
         "sql_validated": True,
     }
@@ -707,60 +766,43 @@ def _build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict |
     }
 
 
-def _build_insights(parsed: dict, rows: list, cols: list, comparison: dict | None) -> list[dict]:
-    """Build analysis insights for ResultCard section 3."""
+def _build_insights(parsed: dict, rows: list, cols: list,
+                     comparison: dict | None, user_query: str = "") -> list[dict]:
+    """Build analysis insights from templates (deep analysis via /api/analyze)."""
     if not rows:
         return []
 
     amt_idx = _find_amount_col(cols)
-    label_idx = _find_label_col(cols)
-    insights = []
+    fallback = []
 
-    # Insight 1: Comparison
     if comparison:
         rate = comparison.get("change_rate")
         direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
         cmp_label = comparison.get("label", "对比")
         amt = abs(comparison.get("change_amount", 0) or 0) / 10000
-        if rate is not None:
-            insights.append({
-                "type": "comparison",
-                "text": f"较{cmp_label}{direction}了{amt:,.2f}万美元（{rate:+.2f}%）",
-            })
-        else:
-            insights.append({
-                "type": "comparison",
-                "text": f"较{cmp_label}{direction}了{amt:,.2f}万美元",
-            })
-    else:
-        total = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
-        insights.append({
-            "type": "overview",
-            "text": f"查询到交易共合计 {total:,.2f} 万美元",
+        text = f"较{cmp_label}{direction}了{amt:,.2f}万美元"
+        text += f"（{rate:+.2f}%）" if rate is not None else ""
+        fallback.append({
+            "type": "growth" if (comparison.get("change_amount") or 0) >= 0 else "risk",
+            "title": f"{cmp_label}变化",
+            "detail": text,
         })
 
-    # Insight 2: Volume insight
-    bank_idx = None
-    for i, c in enumerate(cols):
-        if c in ("BANKNAME", "银行", "DIPNAME"):
-            bank_idx = i
-            break
+    # Volume distribution
+    bank_idx = _find_label_col(cols) if cols else None
     if bank_idx is not None and len(rows) > 1:
         vals = [(float(r[amt_idx]) if len(r) > amt_idx and r[amt_idx] is not None else 0) for r in rows]
-        if vals:
-            max_val = max(vals)
-            min_val = min(vals)
-            max_row = rows[vals.index(max_val)]
-            min_row = rows[vals.index(min_val)]
-            max_name = str(max_row[bank_idx]) if max_row and len(max_row) > bank_idx else ""
-            min_name = str(min_row[bank_idx]) if min_row and len(min_row) > bank_idx else ""
-            if max_name and max_val > 0:
-                insights.append({
-                    "type": "distribution",
-                    "text": f"交易量最高为 {max_name}（{max_val/10000:,.2f} 万美元），最低为 {min_name}（{min_val/10000:,.2f} 万美元）",
-                })
+        max_val = max(vals)
+        max_row = rows[vals.index(max_val)]
+        max_name = str(max_row[bank_idx]) if max_row and len(max_row) > bank_idx else ""
+        if max_name and max_val > 0:
+            fallback.append({
+                "type": "quality",
+                "title": "交易量分布",
+                "detail": f"最高为 {max_name}（{max_val/10000:,.2f} 万美元）",
+            })
 
-    return insights
+    return fallback
 
 
 _INHERIT_PARAMS = {
