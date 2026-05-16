@@ -1,9 +1,13 @@
 import logging
+import os
 import oracledb
 from contextlib import contextmanager
 from .config import DBConfig
 
 logger = logging.getLogger(__name__)
+
+# Ensure Oracle NLS encoding for Chinese characters
+os.environ.setdefault("NLS_LANG", "AMERICAN_AMERICA.AL32UTF8")
 
 import platform
 if platform.system() == "Windows":
@@ -13,6 +17,7 @@ else:
 _config = DBConfig()
 _oracle_ready = False
 _oracle_error: str | None = None
+_pool = None
 
 
 def _ensure_oracle() -> None:
@@ -28,8 +33,17 @@ def _ensure_oracle() -> None:
 
     try:
         oracledb.init_oracle_client(lib_dir=IC_DIR)
+        global _pool
+        _pool = oracledb.create_pool(
+            user=_config.user,
+            password=_config.password,
+            dsn=_config.dsn,
+            min=1,
+            max=10,
+            getmode=oracledb.POOL_GETMODE_WAIT,
+        )
         _oracle_ready = True
-        logger.info("Oracle client initialized: %s", IC_DIR)
+        logger.info("Oracle client + pool initialized: %s (min=1, max=10)", IC_DIR)
     except oracledb.Error as e:
         _oracle_error = str(e)
         raise RuntimeError(
@@ -41,10 +55,8 @@ def _ensure_oracle() -> None:
 @contextmanager
 def get_db():
     _ensure_oracle()
-    conn = oracledb.connect(
-        user=_config.user, password=_config.password, dsn=_config.dsn
-    )
+    conn = _pool.acquire()
     try:
         yield conn
     finally:
-        conn.close()
+        _pool.drop(conn)

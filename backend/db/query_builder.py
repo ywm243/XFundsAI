@@ -1,3 +1,6 @@
+import re
+
+
 class TradeQueryBuilder:
     VIEW_MAP = {
         "spot": "XF_FX_SPOTTRADE_VIEW",
@@ -35,6 +38,14 @@ class TradeQueryBuilder:
 
     # ---- shared helpers ----
 
+    _BANK_NAME_RE = re.compile(r'^[一-龯\w\s()（）\-]+$')
+    _CUST_NAME_RE = re.compile(r'^[一-龯\w\s()（）.]+$')
+
+    @staticmethod
+    def _validate_name(value):
+        if value and not TradeQueryBuilder._BANK_NAME_RE.fullmatch(value):
+            raise ValueError(f"Invalid name input: {value!r}")
+
     @classmethod
     def _escape_bank_name(cls, bank_name):
         return bank_name.replace("\\", "\\\\").replace("'", "''").replace("%", "\\%").replace("_", "\\_")
@@ -43,6 +54,7 @@ class TradeQueryBuilder:
     def _build_cte(cls, bank_name):
         """Build CTE for bank name fuzzy search. Returns (cte_sql, extra_condition)."""
         if bank_name:
+            cls._validate_name(bank_name)
             safe_name = cls._escape_bank_name(bank_name)
             cte = (
                 f"WITH matched_banks AS (\n"
@@ -73,7 +85,8 @@ class TradeQueryBuilder:
             conditions.append(f"t.BUYORSELL='{buy_sell}'")
 
         if cust_name:
-            safe_cust = cust_name.replace("'", "''")
+            cls._validate_name(cust_name)
+            safe_cust = cust_name.replace"'", "''")
             conditions.append(f"t.CUSTNAME='{safe_cust}'")
 
         if special_states is not None and len(special_states) > 0:

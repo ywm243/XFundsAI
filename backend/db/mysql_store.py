@@ -597,4 +597,3 @@ def _auto_migrate() -> None:
         conn.close()
 
 
-_auto_migrate()

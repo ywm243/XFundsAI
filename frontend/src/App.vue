@@ -101,7 +101,7 @@ function buildContext() {
     } else if (m.mode === 'result_card' && m.data?.params) {
       recent.push({ role: 'assistant', content: JSON.stringify(m.data.params) })
     }
-    if (recent.length >= 4) break
+    if (recent.length >= 2) break
   }
   return recent.length > 0 ? recent : null
 }
@@ -165,6 +165,7 @@ async function handleSend(text) {
           rows: result.rows,
           row_count: result.row_count,
           sql: result.sql,
+          comparison_sql: result.comparison_sql,
           params: result.params,
           comparison: result.comparison,
           summary: result.summary,
@@ -177,6 +178,7 @@ async function handleSend(text) {
         rows: result.rows,
         row_count: result.row_count,
         sql: result.sql,
+        comparison_sql: result.comparison_sql,
         params: result.params,
         comparison: result.comparison,
         summary: result.summary,
@@ -220,8 +222,12 @@ async function handleConfirm(params, msgIdx) {
         rows: result.rows,
         row_count: result.row_count,
         sql: result.sql,
+        comparison_sql: result.comparison_sql,
         params: result.params,
         comparison: result.comparison,
+        summary: result.summary,
+        chartOption: result.chartOption,
+        insights: result.insights,
       },
     }
   } catch (err) {

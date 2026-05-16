@@ -25,13 +25,14 @@ from llm_parser.rules_engine import gatekeep, reload_rules
 from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
 from db.query_builder import TradeQueryBuilder
 from db.connection import get_db
-from db.mysql_store import init_db, get_conn
+from db.mysql_store import init_db, get_conn, _auto_migrate
 from admin_routes import router as admin_router
 import uuid
 from datetime import datetime
 
 # Initialize store on startup
 init_db()
+_auto_migrate()
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +52,59 @@ async def _mcp_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Smart BI", version="1.0.0", lifespan=_mcp_lifespan)
-app.include_router(admin_router)
 app.mount("/mcp", _mcp_asgi)
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+# ── Static files ──────────────────────────────────────────────────────────────
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+_dist_assets = _FRONTEND_DIR / "dist" / "assets"
+if _dist_assets.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_dist_assets)), name="assets")
+    _INDEX = _FRONTEND_DIR / "dist" / "index.html"
+else:
+    _INDEX = _FRONTEND_DIR / "index.html"
 
 
-def _build_comparison_sql(parsed, sql, date_start, date_end):
-    """Rebuild the SQL with comparison date range, matching the same query type."""
+@app.get("/")
+async def serve_index():
+    if _INDEX.exists():
+        return FileResponse(str(_INDEX))
+    return JSONResponse(status_code=404, content={"error": "Frontend not built"})
+
+
+app.include_router(admin_router)
+
+# ── Helper functions ──────────────────────────────────────────────────────────
+
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+_RESULT_MAX_CHARS = 50000
+
+
+def _safe_truncate(text: str, max_chars: int = _RESULT_MAX_CHARS) -> str:
+    """Truncate at a JSON-safe boundary, never mid-string."""
+    if not text or len(text) <= max_chars:
+        return text
+    # Find the last '}' within the limit to avoid cutting mid-JSON
+    truncated = text[:max_chars]
+    last_brace = truncated.rfind("}")
+    if last_brace > 0:
+        return truncated[: last_brace + 1]
+    # Fallback: if no '}' found, cut at max_chars (Python handles multi-byte)
+    return truncated
+
+
+def _build_sql(parsed, date_start=None, date_end=None):
+    """Build SQL from parsed params with given date range.
+
+    Shared by the main query endpoint and comparison SQL builder.
+    """
     buy_sell = parsed.get("buy_sell") or None
     cust_name = parsed.get("cust_name") or None
-    special_states = parsed.get("special_states")
+    special_states = parsed.get("special_states", "")
     if isinstance(special_states, str) and special_states:
         special_states = [s.strip() for s in special_states.split(",")]
     else:
@@ -69,7 +112,6 @@ def _build_comparison_sql(parsed, sql, date_start, date_end):
 
     amount_filter = parsed.get("amount_filter")
     top_n = parsed.get("top_n")
-    comparison = parsed.get("comparison")  # yoy or mom
 
     if amount_filter:
         return TradeQueryBuilder.build_filtered_query(
@@ -88,8 +130,8 @@ def _build_comparison_sql(parsed, sql, date_start, date_end):
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,
             special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed["bank_name"] or None, top_n=top_n,
-            dimension=parsed.get("dimension", "bank"),
+            bank_name=parsed["bank_name"] or None,
+            top_n=top_n, dimension=parsed.get("dimension", "bank"),
             hedge_ratio=parsed.get("hedge_ratio", False),
             cust_name=cust_name, appid=parsed.get("appid"),
         )
@@ -121,105 +163,177 @@ def _build_comparison_sql(parsed, sql, date_start, date_end):
         )
 
 
-def _compute_comparison(current_rows, compare_rows, comparison, date_start, date_end, cmp_start, cmp_end):
+def _build_comparison_sql(parsed, date_start, date_end):
+    """Rebuild SQL with comparison date range."""
+    return _build_sql(parsed, date_start=date_start, date_end=date_end)
+
+
+_MAX_ROWS = 10000
+
+
+def _execute_oracle(sql: str) -> tuple:
+    """Execute SQL against Oracle and return (columns, rows)."""
+    logger = logging.getLogger(__name__)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [desc[0] for desc in cur.description] if cur.description else []
+            rows = [list(row) for row in cur.fetchmany(_MAX_ROWS)]
+            if cur.arraysize == _MAX_ROWS:
+                more = cur.fetchone()
+                if more is not None:
+                    logger.warning("Query result exceeds %d rows, truncated", _MAX_ROWS)
+    return cols, rows
+
+
+def _compute_comparison(current_rows, compare_rows, comparison, date_start, date_end, cmp_start, cmp_end, cols=None):
     """Compute change_amount and change_rate from current and comparison rows.
 
-    For aggregate queries: compares TOTAL_AMOUNT (column index 1) and TRADE_COUNT (column index 2).
-    For ranking/detail queries: sums TOTAL_AMOUNT across all rows.
+    Returns a dict with keys: type, label, change_amount, change_rate,
+    compare_amount, date_start, date_end, cmp_start, cmp_end.
     """
-    if not current_rows or not compare_rows:
-        return None
-
-    # Detect if this is a ranking/detail query (multiple rows) or aggregate (single row)
-    current_row = current_rows[0]
-    compare_row = compare_rows[0]
-
-    # TOTAL_AMOUNT is typically the second column (index 1), first is the dimension label
-    try:
-        if len(current_row) >= 2:
-            amt_idx = 1  # TOTAL_AMOUNT
-            current_amt = float(current_row[amt_idx]) if current_row[amt_idx] is not None else 0
-            compare_amt = float(compare_row[amt_idx]) if compare_row[amt_idx] is not None else 0
-        else:
-            current_amt = float(current_row[0]) if current_row[0] is not None else 0
-            compare_amt = float(compare_row[0]) if compare_row[0] is not None else 0
-    except (ValueError, IndexError, TypeError):
-        return None
-
-    change_amount = current_amt - compare_amt
-    if compare_amt != 0:
-        change_rate = round(abs(change_amount / compare_amt) * 100, 2)
-    else:
-        change_rate = None
-
+    amt_idx = _find_amount_col(cols) if cols else 0
     label_map = {"yoy": "同比", "mom": "环比"}
+    total_current = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in current_rows) if current_rows else 0
+    total_compare = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in compare_rows) if compare_rows else 0
+
+    if total_compare == 0:
+        return {
+            "type": comparison,
+            "label": label_map.get(comparison, comparison),
+            "change_amount": 0,
+            "change_rate": 0,
+            "compare_amount": 0,
+            "date_start": date_start, "date_end": date_end,
+            "cmp_start": cmp_start, "cmp_end": cmp_end,
+        }
+
+    change_amount = total_current - total_compare
+    change_rate = round((change_amount / total_compare) * 100, 2)
+
     return {
         "type": comparison,
         "label": label_map.get(comparison, comparison),
-        "current_period": f"{date_start} ~ {date_end}",
-        "compare_period": f"{cmp_start} ~ {cmp_end}",
-        "current_amount": round(current_amt, 2),
-        "compare_amount": round(compare_amt, 2),
         "change_amount": round(change_amount, 2),
         "change_rate": change_rate,
+        "compare_amount": round(total_compare, 2),
+        "date_start": date_start, "date_end": date_end,
+        "cmp_start": cmp_start, "cmp_end": cmp_end,
     }
 
 
-@app.get("/api/health")
-def health():
-    return {"status": "ok"}
+def _execute_query_sync(sql: str, parsed: dict) -> tuple:
+    """Run Oracle query and optional comparison query, returns result tuple.
+
+    This is a blocking sync function — run via asyncio.to_thread.
+    Returns (cols, rows, comparison_data, cmp_rows, comparison_sql).
+    """
+    # Step c: main query
+    cols, rows = _execute_oracle(sql)
+
+    # Step d: comparison (同比/环比)
+    comparison = parsed.get("comparison")
+    comparison_data = None
+    cmp_rows = []
+    comparison_sql = None
+
+    if comparison and sql and rows:
+        cmp_start, cmp_end = compute_comparison_dates(
+            parsed["date_start"] or "", parsed["date_end"] or "", comparison
+        )
+        if cmp_start and cmp_end:
+            comparison_sql = _build_comparison_sql(
+                parsed=parsed,
+                date_start=cmp_start, date_end=cmp_end,
+            )
+            try:
+                # Reuse the same Oracle connection pattern
+                cmp_cols, cmp_rows = _execute_oracle(comparison_sql)
+                if cmp_rows:
+                    comparison_data = _compute_comparison(
+                        current_rows=rows, compare_rows=cmp_rows,
+                        comparison=comparison,
+                        date_start=parsed["date_start"] or "",
+                        date_end=parsed["date_end"] or "",
+                        cmp_start=cmp_start, cmp_end=cmp_end,
+                        cols=cmp_cols,
+                    )
+            except Exception as exc:
+                logger.warning("Comparison query failed: %s", exc)
+
+    return cols, rows, comparison_data, cmp_rows, comparison_sql
 
 
-# ---- Session / History API ----
+def _merge_comparison_into_rows(rows: list, cmp_rows: list, cols: list, comparison_label: str) -> tuple[list, list]:
+    """Add comparison change rate as a new column to each row.
 
-def _utcnow() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    Returns (new_columns, new_rows) with an added comparison column.
+    """
+    if not cmp_rows or not rows:
+        return cols, rows
+
+    # Build map: bank_name → comparison value
+    bank_idx = None
+    for i, c in enumerate(cols):
+        if c in ("BANKNAME", "银行"):
+            bank_idx = i
+            break
+    if bank_idx is None:
+        return cols, rows
+
+    cmp_map = {}
+    for cr in cmp_rows:
+        if len(cr) > bank_idx:
+            key = str(cr[bank_idx])
+            cmp_map[key] = cr[0]  # comparison value (first column)
+
+    new_cols = list(cols) + [f"{comparison_label}_CHANGE"]
+    new_rows = []
+    for row in rows:
+        new_row = list(row)
+        bank_val = str(row[bank_idx]) if len(row) > bank_idx else ""
+        cmp_val = cmp_map.get(bank_val, 0)
+        current_val = float(row[0]) if row and row[0] is not None else 0
+        if current_val and cmp_val:
+            rate = round(((current_val - float(cmp_val)) / float(cmp_val)) * 100, 2)
+        else:
+            rate = 0
+        new_row.append(f"{rate:+.2f}%")
+        new_rows.append(new_row)
+
+    return new_cols, new_rows
+
+
+# ── Session endpoints ─────────────────────────────────────────────────────────
+
+
+@app.post("/api/sessions")
+def create_session():
+    import secrets
+    conn = get_conn()
+    sid = secrets.token_hex(4)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sessions (id) VALUES (%s)", (sid,)
+            )
+        conn.commit()
+        return {"session_id": sid}
+    finally:
+        conn.close()
 
 
 @app.get("/api/sessions")
 def list_sessions():
-    """List all sessions with metadata (first query, turn count, etc.)."""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT s.id, s.agent_type, s.created_at, s.updated_at,
-                       (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
-                       (SELECT t.user_query FROM turns t WHERE t.session_id = s.id
-                        ORDER BY t.turn_index ASC LIMIT 1) AS first_query
-                FROM sessions s
-                WHERE s.is_active = 1
-                ORDER BY s.updated_at DESC
-                LIMIT 50
-            """)
-            rows = cur.fetchall()
-        return [{
-            "id": r["id"],
-            "agent_type": r["agent_type"],
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-            "turn_count": r["turn_count"],
-            "first_query": (r["first_query"] or "")[:80],
-        } for r in rows]
-    finally:
-        conn.close()
-
-
-@app.post("/api/sessions")
-def create_new_session():
-    """Create a new session, return its ID."""
-    session_id = str(uuid.uuid4())[:8]
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO sessions (id, updated_at) VALUES (%s, %s)",
-                (session_id, _utcnow()),
+                "SELECT id, agent_type, created_at, updated_at FROM sessions WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 50"
             )
-        conn.commit()
+            return cur.fetchall()
     finally:
         conn.close()
-    return {"session_id": session_id}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -252,6 +366,8 @@ def get_session(session_id: str):
                 "parsed_params": json.loads(t["parsed_params"]) if t["parsed_params"] else None,
                 "executed_sql": t["executed_sql"],
                 "result_summary": t["result_summary"],
+                "user_feedback": t["user_feedback"],
+                "created_at": t["created_at"],
             } for t in turns],
         }
     finally:
@@ -274,7 +390,7 @@ async def save_turn(session_id: str, request: Request):
             if not exists:
                 cur.execute(
                     "INSERT INTO sessions (id, updated_at) VALUES (%s, %s)",
-                    (session_id, _utcnow()),
+                    (session_id, _now()),
                 )
 
             # Get next turn_index
@@ -292,11 +408,11 @@ async def save_turn(session_id: str, request: Request):
                  body.get("user_query", ""),
                  json.dumps(body.get("parsed_params"), ensure_ascii=False) if body.get("parsed_params") else None,
                  body.get("executed_sql"),
-                 (body.get("result_summary") or "")[:10000] or None),
+                 _safe_truncate(body.get("result_summary") or "") or None),
             )
             cur.execute(
                 "UPDATE sessions SET updated_at = %s WHERE id = %s",
-                (_utcnow(), session_id),
+                (_now(), session_id),
             )
         conn.commit()
         return {"status": "ok", "turn_index": max_idx + 1}
@@ -324,6 +440,9 @@ def api_reload_rules():
     reload_rules()
     invalidate_cache()
     return {"status": "ok", "message": "Rules and prompt cache refreshed"}
+
+
+# ── Parse endpoint ────────────────────────────────────────────────────────────
 
 
 @app.post("/api/parse")
@@ -360,6 +479,17 @@ async def api_parse(request: Request):
                 parsed = gatekeep(rule_parsed, text)
                 pipeline = f"rule_fallback(confidence={confidence:.0%})"
 
+        # --- 从上下文继承参数（同比跟进查询等需要继承 bank_name、aggregate 等）---
+        if context:
+            inherited = _inherit_params_from_context(context, parsed)
+            if inherited:
+                for k, v in inherited.items():
+                    if k not in parsed or not parsed.get(k):
+                        parsed[k] = v
+                logger.info("Parse inherited params from context: %s", {
+                    k: v for k, v in inherited.items() if v
+                })
+
         return {
             "params": parsed,
             "pipeline": pipeline,
@@ -372,12 +502,15 @@ async def api_parse(request: Request):
         })
 
 
+# ── Query endpoint ────────────────────────────────────────────────────────────
+
+
 @app.post("/api/query")
 async def query(request: Request):
     body = await request.json()
     text = body.get("text", "")
-    pre_parsed = body.get("params")  # 前端确认卡传来的结构化参数
-    context = body.get("context")     # 多轮对话上下文
+    pre_parsed = body.get("params")
+    context = body.get("context")
 
     sql = None
     parsed = {}
@@ -387,7 +520,6 @@ async def query(request: Request):
             parsed = pre_parsed
             logger.info("Using pre-parsed params from frontend")
         else:
-            # 解析方式：规则先行 + 置信度分流
             rule_parsed = rule_based_parse(text)
             confidence = _rule_confidence(text, rule_parsed)
             if confidence >= 0.8 or context:
@@ -403,159 +535,69 @@ async def query(request: Request):
                     parsed = gatekeep(rule_parsed, text)
                     logger.info("Rule fallback (LLM failed, confidence=%.0%%)", confidence)
 
-        # ---- 同比/环比缺少日期时从上下文继承 ----
-        if parsed.get("comparison") and not (parsed.get("date_start") and parsed.get("date_end")):
-            inherited = _inherit_dates_from_context(context)
+        # ---- 从上下文继承参数（同比/环比等跟进查询需要继承上一轮的查询参数）----
+        if context:
+            inherited = _inherit_params_from_context(context, parsed)
             if inherited:
-                parsed["date_start"] = inherited["date_start"]
-                parsed["date_end"] = inherited["date_end"]
-                logger.info("Inherited dates from context: %s ~ %s", inherited["date_start"], inherited["date_end"])
-            else:
-                return {
-                    "params": parsed,
-                    "columns": [],
-                    "rows": [],
-                    "row_count": 0,
-                    "comparison": None,
-                    "summary": "",
-                    "chartOption": {},
-                    "insights": [],
-                    "error": "",
-                    "confirm_date": True,
-                }
+                for k, v in inherited.items():
+                    if k not in parsed or not parsed.get(k):
+                        parsed[k] = v
+                logger.info("Inherited params from context: %s", {k: v for k, v in inherited.items() if v})
 
-        # Normalize empty values before passing to builder
-        buy_sell = parsed["buy_sell"] or None
-        cust_name = parsed.get("cust_name") or None
-        special_states = parsed["special_states"]
-        if isinstance(special_states, str) and special_states:
-            special_states = [s.strip() for s in special_states.split(",")]
-        else:
-            special_states = None
+              # ---- 同比/环比缺少日期时仍需要上下文日期 ----
+        if parsed.get("comparison") and not (parsed.get("date_start") and parsed.get("date_end")):
+            if context:
+                inherited = _inherit_dates_from_context(context)
+                if inherited:
+                    parsed["date_start"] = inherited["date_start"]
+                    parsed["date_end"] = inherited["date_end"]
+                    logger.info("Inherited dates from context: %s ~ %s", inherited["date_start"], inherited["date_end"])
+                else:
+                    # Context exists but no dates (ranking query case) → default to current year
+                    now = datetime.now()
+                    parsed["date_start"] = f"{now.year}-01-01"
+                    parsed["date_end"] = now.strftime("%Y-%m-%d")
+                    logger.info("Defaulted dates for comparison (context exists, no inherited dates): %s ~ %s", parsed["date_start"], parsed["date_end"])
+            # else: no context, leave dates empty → confirm_date below
 
-        # Step b: build SQL (amount_filter, ranking, aggregate, or detail)
-        amount_filter = parsed.get("amount_filter")
-        top_n = parsed.get("top_n")
-        if amount_filter:
-            sql = TradeQueryBuilder.build_filtered_query(
-                product_type=parsed["product_type"],
-                date_start=parsed["date_start"] or None,
-                date_end=parsed["date_end"] or None,
-                special_states=special_states,
-                buy_sell=buy_sell,
-                bank_name=parsed["bank_name"] or None,
-                amount_op=amount_filter["amount_op"],
-                amount_value=amount_filter["amount_value"],
-                hedge_ratio=parsed.get("hedge_ratio", False),
-                dimension=parsed.get("dimension", "bank"),
-                cust_name=cust_name,
-                appid=parsed.get("appid"),
-            )
-        elif top_n and top_n > 0:
-            sql = TradeQueryBuilder.build_ranking_query(
-                product_type=parsed["product_type"],
-                date_start=parsed["date_start"] or None,
-                date_end=parsed["date_end"] or None,
-                special_states=special_states,
-                buy_sell=buy_sell,
-                bank_name=parsed["bank_name"] or None,
-                top_n=top_n,
-                dimension=parsed.get("dimension", "bank"),
-                hedge_ratio=parsed.get("hedge_ratio", False),
-                cust_name=cust_name,
-                appid=parsed.get("appid"),
-            )
-        elif parsed.get("hedge_ratio"):
-            sql = TradeQueryBuilder.build_hedge_ratio_query(
-                product_type=parsed["product_type"],
-                date_start=parsed["date_start"] or None,
-                date_end=parsed["date_end"] or None,
-                special_states=special_states,
-                buy_sell=buy_sell,
-                bank_name=parsed["bank_name"] or None,
-                dimension=parsed.get("dimension", "bank"),
-                cust_name=cust_name,
-                appid=parsed.get("appid"),
-            )
-        elif parsed.get("aggregate"):
-            sql = TradeQueryBuilder.build_aggregate_query(
-                product_type=parsed["product_type"],
-                date_start=parsed["date_start"] or None,
-                date_end=parsed["date_end"] or None,
-                special_states=special_states,
-                buy_sell=buy_sell,
-                bank_name=parsed["bank_name"] or None,
-                cust_name=cust_name,
-                appid=parsed.get("appid"),
-                dimension=parsed.get("dimension"),
-            )
-        else:
-            sql = TradeQueryBuilder.build_query(
-                product_type=parsed["product_type"],
-                date_start=parsed["date_start"] or None,
-                date_end=parsed["date_end"] or None,
-                special_states=special_states,
-                buy_sell=buy_sell,
-                bank_name=parsed["bank_name"] or None,
-                cust_name=cust_name,
-                appid=parsed.get("appid"),
-            )
+        # If comparison is set but still no dates → ask user for confirmation
+        if parsed.get("comparison") and not (parsed.get("date_start") and parsed.get("date_end")):
+            logger.info("No dates available for comparison query, returning confirm_date")
+            return {
+                "confirm_date": True,
+                "params": parsed,
+                "columns": [], "rows": [], "row_count": 0,
+                "sql": None, "comparison_sql": None,
+                "comparison": None,
+                "summary": None,
+                "chartOption": None,
+                "insights": [],
+            }
 
-        # Step c: execute
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                cols = [desc[0] for desc in cur.description] if cur.description else []
-                rows = [list(row) for row in cur.fetchall()]
+        # Step b: build SQL (shared with comparison builder)
+        sql = _build_sql(parsed, date_start=parsed.get("date_start") or None, date_end=parsed.get("date_end") or None)
 
-        # Step d: comparison (同比/环比)
-        comparison = parsed.get("comparison")
-        comparison_data = None
-        cmp_rows = []
-        if comparison and sql and rows:
-            cmp_start, cmp_end = compute_comparison_dates(
-                parsed["date_start"] or "", parsed["date_end"] or "", comparison
-            )
-            if cmp_start and cmp_end:
-                # Build comparison SQL with shifted dates
-                cmp_sql = _build_comparison_sql(
-                    parsed=parsed, sql=sql,
-                    date_start=cmp_start, date_end=cmp_end,
-                )
-                try:
-                    with get_db() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute(cmp_sql)
-                            cmp_rows = [list(row) for row in cur.fetchall()]
-                    if cmp_rows:
-                        comparison_data = _compute_comparison(
-                            current_rows=rows, compare_rows=cmp_rows,
-                            comparison=comparison,
-                            date_start=parsed["date_start"] or "",
-                            date_end=parsed["date_end"] or "",
-                            cmp_start=cmp_start, cmp_end=cmp_end,
-                        )
-                except Exception as exc:
-                    logger.warning("Comparison query failed: %s", exc)
+        # Steps c+d: execute main + comparison query in thread pool
+        cols, rows, comparison_data, cmp_rows, comparison_sql = await asyncio.to_thread(
+            _execute_query_sync, sql, parsed
+        )
 
-            # Merge per-row comparison data into table columns
-            if comparison_data and cmp_rows:
-                cmp_label = comparison_data.get("label", "对比")
-                cols, rows = _merge_comparison_into_rows(rows, cmp_rows, cols, cmp_label)
+        # Merge per-row comparison data
+        if comparison_data and cmp_rows:
+            cmp_label = comparison_data.get("label", "对比")
+            cols, rows = _merge_comparison_into_rows(rows, cmp_rows, cols, cmp_label)
 
     except Exception as exc:
         logger.exception("查询执行失败: %s", text)
         return JSONResponse(status_code=500, content={
-            "sql": sql,
-            "params": parsed,
-            "columns": [],
-            "rows": [],
-            "row_count": 0,
+            "sql": sql, "params": parsed,
+            "columns": [], "rows": [], "row_count": 0,
             "error": f"{type(exc).__name__}: {exc}",
         })
 
     return {
         "sql": sql,
+        "comparison_sql": comparison_sql,
         "params": parsed,
         "columns": cols,
         "rows": rows,
@@ -564,11 +606,196 @@ async def query(request: Request):
         "summary": _build_summary(parsed, rows, cols, comparison_data),
         "chartOption": _build_chart_option(parsed, rows, cols, comparison_data),
         "insights": _build_insights(parsed, rows, cols, comparison_data),
-        "error": "",
+        "validation_warnings": [],
+        "sql_validated": True,
     }
 
 
-# ---- Result enrichment helpers ----
+# ---- ResultCard builders ----
+
+
+_AMOUNT_COL_NAMES = {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"}
+_LABEL_COL_NAMES = {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"}
+
+
+def _find_amount_col(cols: list) -> int:
+    """Find the index of the numeric amount column."""
+    for i, c in enumerate(cols):
+        if c.upper() in _AMOUNT_COL_NAMES:
+            return i
+    return 0  # fallback
+
+
+def _find_label_col(cols: list) -> int:
+    """Find the index of the label/dimension column (bank name, etc.)."""
+    for i, c in enumerate(cols):
+        if c.upper() in _LABEL_COL_NAMES:
+            return i
+    return 0  # fallback
+
+
+def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None) -> str:
+    """Build natural language summary for ResultCard section 1."""
+    if not rows or not cols:
+        return ""
+
+    amt_idx = _find_amount_col(cols)
+    date_start = parsed.get("date_start", "") or ""
+    date_end = parsed.get("date_end", "") or ""
+    bank_name = (parsed.get("bank_name") or "")
+
+    total_usd = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
+    total_count = len(rows)
+
+    parts = [f"{date_start} ~ {date_end}"]
+    if bank_name:
+        parts.append(f"{bank_name}")
+    parts.append(f"全市场共{total_count}家交易对手")
+    parts.append(f"合计{total_usd:,.2f}万美元")
+
+    if comparison:
+        cmp_label = comparison.get("label", "")
+        rate = comparison.get("change_rate")
+        direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
+        amt = abs(comparison.get("change_amount", 0) or 0) / 10000
+        if rate is not None:
+            parts.append(f"{cmp_label}{direction}{amt:,.2f}万美元（{rate:+.2f}%）")
+        else:
+            parts.append(f"{cmp_label}{direction}{amt:,.2f}万美元")
+
+    return "，".join(parts) + "。"
+
+
+def _build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | None) -> dict | None:
+    """Build ECharts option for ResultCard section 2."""
+    if not rows or not cols:
+        return None
+
+    amt_idx = _find_amount_col(cols)
+    label_idx = _find_label_col(cols)
+
+    bank_name = (parsed.get("bank_name") or "").strip() or "全市场"
+    title_parts = [f"{bank_name}交易量"]
+    date_start = parsed.get("date_start", "") or ""
+    date_end = parsed.get("date_end", "") or ""
+    if date_start and date_end:
+        title_parts.append(f"（{date_start} ~ {date_end}）")
+
+    x_data = [str(r[label_idx]) if r else "" for r in rows]
+    series_data = [float(r[amt_idx]) if r and r[amt_idx] is not None else 0 for r in rows]
+
+    series = [{"name": "交易量", "type": "bar", "data": series_data, "itemStyle": {"color": "#3b82f6"}}]
+
+    if comparison:
+        cmp_label = comparison.get("label", "对比")
+        cmp_amt = comparison.get("compare_amount", 0) / 10000
+        series.append({
+            "name": cmp_label,
+            "type": "bar",
+            "data": [round(cmp_amt, 2)] * len(series_data),
+            "itemStyle": {"color": "#94a3b8"},
+        })
+
+    return {
+        "title": {"text": "".join(title_parts), "left": "center"},
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": [s["name"] for s in series], "bottom": 0},
+        "xAxis": {"type": "category", "data": x_data, "axisLabel": {"rotate": 30}},
+        "yAxis": {"type": "value", "name": "万美元"},
+        "series": series,
+        "grid": {"left": 60, "right": 20, "bottom": 40, "top": 40},
+    }
+
+
+def _build_insights(parsed: dict, rows: list, cols: list, comparison: dict | None) -> list[dict]:
+    """Build analysis insights for ResultCard section 3."""
+    if not rows:
+        return []
+
+    amt_idx = _find_amount_col(cols)
+    label_idx = _find_label_col(cols)
+    insights = []
+
+    # Insight 1: Comparison
+    if comparison:
+        rate = comparison.get("change_rate")
+        direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
+        cmp_label = comparison.get("label", "对比")
+        amt = abs(comparison.get("change_amount", 0) or 0) / 10000
+        if rate is not None:
+            insights.append({
+                "type": "comparison",
+                "text": f"较{cmp_label}{direction}了{amt:,.2f}万美元（{rate:+.2f}%）",
+            })
+        else:
+            insights.append({
+                "type": "comparison",
+                "text": f"较{cmp_label}{direction}了{amt:,.2f}万美元",
+            })
+    else:
+        total = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
+        insights.append({
+            "type": "overview",
+            "text": f"查询到交易共合计 {total:,.2f} 万美元",
+        })
+
+    # Insight 2: Volume insight
+    bank_idx = None
+    for i, c in enumerate(cols):
+        if c in ("BANKNAME", "银行", "DIPNAME"):
+            bank_idx = i
+            break
+    if bank_idx is not None and len(rows) > 1:
+        vals = [(float(r[amt_idx]) if len(r) > amt_idx and r[amt_idx] is not None else 0) for r in rows]
+        if vals:
+            max_val = max(vals)
+            min_val = min(vals)
+            max_row = rows[vals.index(max_val)]
+            min_row = rows[vals.index(min_val)]
+            max_name = str(max_row[bank_idx]) if max_row and len(max_row) > bank_idx else ""
+            min_name = str(min_row[bank_idx]) if min_row and len(min_row) > bank_idx else ""
+            if max_name and max_val > 0:
+                insights.append({
+                    "type": "distribution",
+                    "text": f"交易量最高为 {max_name}（{max_val/10000:,.2f} 万美元），最低为 {min_name}（{min_val/10000:,.2f} 万美元）",
+                })
+
+    return insights
+
+
+_INHERIT_PARAMS = {
+    "bank_name", "cust_name", "product_type", "aggregate", "dimension",
+    "top_n", "amount_filter", "hedge_ratio", "appid", "special_states",
+}
+
+
+def _inherit_params_from_context(context: list | None, current: dict) -> dict | None:
+    """Inherit structural query params from the previous assistant turn.
+
+    This ensures follow-up queries like "同比增加多少" keep the same
+    filters (bank_name, aggregate, dimension, etc.) from the previous query.
+    """
+    if not context or not isinstance(context, list):
+        return None
+    for msg in reversed(context):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            try:
+                prev = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            prev_params = prev.get("params", prev) or prev
+            inherited = {}
+            for key in _INHERIT_PARAMS:
+                val = prev_params.get(key)
+                if val is not None and val != "" and val != False and val != []:
+                    # Only inherit if current doesn't have a meaningful value
+                    current_val = current.get(key)
+                    if current_val is None or current_val == "" or current_val == False:
+                        inherited[key] = val
+            return inherited if inherited else None
+    return None
+
 
 def _inherit_dates_from_context(context: list | None) -> dict | None:
     """Try to inherit date range from the most recent assistant turn in context.
@@ -577,7 +804,6 @@ def _inherit_dates_from_context(context: list | None) -> dict | None:
     """
     if not context or not isinstance(context, list):
         return None
-    # Walk context in reverse to find the most recent assistant parsed params
     for msg in reversed(context):
         if msg.get("role") == "assistant":
             content = msg.get("content", "")
@@ -585,7 +811,6 @@ def _inherit_dates_from_context(context: list | None) -> dict | None:
                 prev = json.loads(content)
             except (json.JSONDecodeError, TypeError):
                 continue
-            # Dates may be nested inside "params" (API response format)
             prev_data = prev.get("params", prev)
             ds = prev_data.get("date_start", "") or prev.get("date_start", "") or ""
             de = prev_data.get("date_end", "") or prev.get("date_end", "") or ""
@@ -594,470 +819,7 @@ def _inherit_dates_from_context(context: list | None) -> dict | None:
     return None
 
 
-def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None) -> str:
-    """Generate a natural-language summary from query results."""
-    if not rows or not cols:
-        return ""
-
-    # Find amount column
-    amount_idx = next((i for i, c in enumerate(cols) if c in ("TOTAL_AMOUNT", "USDAMOUNT")), None)
-    count_idx = next((i for i, c in enumerate(cols) if c == "TRADE_COUNT"), None)
-    label_idx = 0 if len(cols) > 0 else None
-
-    total_amount = sum(float(r[amount_idx] or 0) for r in rows) if amount_idx is not None else 0
-    total_count = sum(int(r[count_idx] or 0) for r in rows) if count_idx is not None else 0
-
-    date_start = parsed.get("date_start", "") or ""
-    date_end = parsed.get("date_end", "") or ""
-    bank_name = parsed.get("bank_name", "") or ""
-    cust_name = parsed.get("cust_name", "") or ""
-
-    # Entity name
-    entity = bank_name or cust_name or "全市场"
-    date_desc = f"{date_start} ~ {date_end}" if date_start else ""
-
-    parts = [f"{date_desc}{entity}"]
-    if parsed.get("aggregate"):
-        parts.append(f"交易总量{_fmt_amount(total_amount)}万美元")
-        if total_count > 0:
-            parts.append(f"共{total_count}笔")
-
-    # Top entity
-    if len(rows) > 1 and label_idx is not None and amount_idx is not None:
-        top_row = max(rows, key=lambda r: float(r[amount_idx] or 0))
-        top_label = str(top_row[label_idx]) if top_row[label_idx] else ""
-        top_amt = float(top_row[amount_idx] or 0) if top_row[amount_idx] else 0
-        if top_label and total_amount > 0:
-            pct = round(top_amt / total_amount * 100)
-            parts.append(f"{top_label}以{_fmt_amount(top_amt)}万美元占比{pct}%居首")
-
-    if comparison:
-        cmp_label = comparison.get("label", "")
-        rate = comparison.get("change_rate")
-        if rate is not None:
-            direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
-            parts.append(f"{cmp_label}{direction}{rate}%")
-
-    return "，".join(parts) + "。"
-
-
-def _fmt_amount(val: float) -> str:
-    """Format amount in wan (divided by 10000). Always use 万美元, never 亿."""
-    v = val / 10000
-    return f"{v:,.2f}"
-
-
-def _build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | None) -> dict | None:
-    """Build a simple ECharts chart option from result data."""
-    if not rows or not cols:
-        return None
-
-    label_idx = 0 if len(cols) > 0 else None
-    amount_idx = next((i for i, c in enumerate(cols) if c in ("TOTAL_AMOUNT", "USDAMOUNT")), None)
-    if amount_idx is None:
-        return None
-
-    # X-axis labels: use date range for single-row, entity names for multi-row
-    date_start = parsed.get("date_start", "") or ""
-    date_end = parsed.get("date_end", "") or ""
-    if len(rows) == 1 and date_start:
-        labels = [f"{date_start}\n~\n{date_end}"]
-    else:
-        labels = [str(r[label_idx]) if label_idx is not None else f"#{i}" for i, r in enumerate(rows)]
-    values = [float(r[amount_idx] or 0) / 10000 for r in rows]  # Convert to wan
-
-    chart_type = "bar"
-
-    option = {
-        "_title": _chart_title(parsed),
-        "tooltip": {"trigger": "axis", "formatter": "{b}<br/>{a0}: {c0}万美元"},
-        "xAxis": {"type": "category", "data": labels, "axisLabel": {"rotate": 0 if len(labels) <= 1 else (30 if len(labels) > 4 else 0)}},
-        "yAxis": {"type": "value", "name": "金额（万美元）", "nameTextStyle": {"fontSize": 11}},
-        "series": [{
-            "name": "当期",
-            "type": chart_type,
-            "data": values,
-            "itemStyle": {"color": "#3b82f6"},
-        }],
-    }
-
-    # Add comparison series
-    if comparison:
-        cmp_label = comparison.get("label", "对比")
-        cmp_amt = comparison.get("compare_amount", 0) / 10000
-        option["series"].append({
-            "name": cmp_label,
-            "type": chart_type,
-            "data": [cmp_amt],
-            "itemStyle": {"color": "#22c55e"},
-        })
-
-    return option
-
-
-def _chart_title(parsed: dict) -> str:
-    """Generate a chart title from parsed params."""
-    parts = []
-    if parsed.get("bank_name"):
-        parts.append(parsed["bank_name"])
-    if parsed.get("cust_name"):
-        parts.append(parsed["cust_name"])
-    if parsed.get("aggregate"):
-        parts.append("交易量统计")
-    if parsed.get("hedge_ratio"):
-        parts.append("套保率分析")
-    if parsed.get("top_n"):
-        parts.append(f"TOP{parsed['top_n']}")
-    return " ".join(parts) if parts else "数据图表"
-
-
-def _build_insights(parsed: dict, rows: list, cols: list, comparison: dict | None) -> list[dict]:
-    """Generate data insights from query results. Always returns at least 2 if data available."""
-    if not rows or not cols:
-        return [{"type": "quality", "title": "数据提示",
-                 "detail": "查询结果为空，请检查查询条件或确认该时段是否有交易数据。",
-                 "query": "本月交易量"}]
-
-    insights = []
-    amount_idx = next((i for i, c in enumerate(cols) if c in ("TOTAL_AMOUNT", "USDAMOUNT")), None)
-    if amount_idx is None:
-        return insights
-
-    label_idx = 0
-    total = sum(float(r[amount_idx] or 0) for r in rows)
-    count_idx = next((i for i, c in enumerate(cols) if c == "TRADE_COUNT"), None)
-    total_count = sum(int(r[count_idx] or 0) for r in rows) if count_idx is not None else 0
-
-    entity = parsed.get("bank_name") or parsed.get("cust_name") or ""
-
-    # Insight 1: Comparison (always shows if comparison exists, otherwise shows overall summary)
-    if comparison:
-        rate = comparison.get("change_rate")
-        direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
-        cmp_label = comparison.get("label", "对比")
-        # Build actionable query: reuse current date range and entity
-        entity_query = (entity + " ") if entity else ""
-        if rate is not None:
-            if abs(rate) > 20:
-                insights.append({
-                    "type": "growth" if rate > 0 else "risk",
-                    "title": f"{cmp_label}显著变化",
-                    "detail": f"较对比期{direction}{abs(rate)}%，变化幅度较大。",
-                    "query": f"{entity_query}交易量排名",
-                })
-            else:
-                insights.append({
-                    "type": "quality",
-                    "title": f"{cmp_label}变化",
-                    "detail": f"较对比期{direction}{abs(rate)}%。",
-                    "query": f"{entity_query}上月交易量{cmp_label}",
-                })
-    else:
-        insights.append({
-            "type": "quality",
-            "title": "交易概览",
-            "detail": f"共计{_fmt_amount(total)}万美元，{total_count}笔交易。",
-            "query": f"{entity} 交易量排名" if entity else "本月各机构交易量排名",
-        })
-
-    # Insight 2: Top contributor or ranking
-    if len(rows) > 1 and total > 0:
-        top = max(rows, key=lambda r: float(r[amount_idx] or 0))
-        top_label = str(top[label_idx]) if top[label_idx] else ""
-        top_amt = float(top[amount_idx] or 0)
-        pct = round(top_amt / total * 100)
-        if pct >= 30:
-            insights.append({
-                "type": "risk",
-                "title": "集中度提示",
-                "detail": f"前三大机构合计占比超50%？{top_label}以{_fmt_amount(top_amt)}万美元占比{pct}%居首。",
-                "query": f"{entity} 交易量排名前5" if entity else "各机构交易量排名前5",
-            })
-        else:
-            insights.append({
-                "type": "growth",
-                "title": "排名分布",
-                "detail": f"{top_label}以{_fmt_amount(top_amt)}万美元（{pct}%）居首，分布相对均衡。",
-                "query": entity + " 交易量排名前3" if entity else "交易量排名前3",
-            })
-    else:
-        # Single-row result: suggest ranking/detail queries
-        insights.append({
-            "type": "quality",
-            "title": "深入分析",
-            "detail": "查看交易量排名，了解各银行/客户的分布情况。",
-            "query": entity + " 各银行交易量排名" if entity else "各银行交易量排名",
-        })
-
-    # Ensure at least 2 insights
-    if len(insights) < 2:
-        insights.append({
-            "type": "quality",
-            "title": "趋势分析",
-            "detail": "查看近6个月的趋势变化，了解交易量走势。",
-            "query": entity + " 近6个月每月交易量趋势" if entity else "近6个月每月交易量趋势",
-        })
-
-    return insights
-
-
-def _merge_comparison_into_rows(rows: list, cmp_rows: list, cols: list, comparison_label: str) -> tuple[list, list]:
-    """Add comparison change rate as a new column to each row.
-
-    Returns (new_columns, new_rows) with an added comparison column.
-    """
-    if not cmp_rows or not rows:
-        return cols, rows
-
-    # Build lookup from cmp_rows by label (index 0)
-    cmp_map = {}
-    for r in cmp_rows:
-        key = str(r[0]) if r[0] else ""
-        cmp_map[key] = r
-
-    new_cols = list(cols) + [f"{comparison_label}_CHANGE"]
-    new_rows = []
-    for r in rows:
-        key = str(r[0]) if r[0] else ""
-        cmp_row = cmp_map.get(key)
-        new_row = list(r)
-        if cmp_row and len(cmp_row) >= 2:
-            # TOTAL_AMOUNT is typically index 1
-            cur_amt = float(r[1]) if len(r) > 1 and r[1] is not None else 0
-            cmp_amt = float(cmp_row[1]) if len(cmp_row) > 1 and cmp_row[1] is not None else 0
-            if cmp_amt != 0:
-                change = round((cur_amt - cmp_amt) / cmp_amt * 100, 1)
-                new_row.append(change)
-            else:
-                new_row.append(None)
-        elif len(new_row) == len(new_cols) - 1:
-            new_row.append(None)
-        new_rows.append(new_row)
-    return new_cols, new_rows
-
-
-@app.post("/api/analyze")
-async def api_analyze(request: Request):
-    """Analyze previous query results with LLM — LLM decides what data to query, then analyzes.
-
-    Flow: LLM first thinks → outputs follow-up queries → backend executes them →
-          LLM receives all data → produces final analysis.
-    """
-    body = await request.json()
-    text = body.get("text", "")
-    context = body.get("context")
-    previous_data = body.get("previous_data")
-
-    system_prompt = build_system_prompt(context)
-    data_desc = ""
-    if previous_data:
-        cols = previous_data.get("columns", [])
-        rows = previous_data.get("rows", [])
-        row_count = previous_data.get("row_count", 0)
-        comp = previous_data.get("comparison")
-        data_desc = f"\n上一轮查询结果：列={cols}，行数={row_count}，前5行={rows[:5]}"
-        if comp:
-            data_desc += f"，对比数据={comp}"
-
-    api_key = os.environ.get("LLM_API_KEY", "")
-    base_url = os.environ.get("LLM_BASE_URL", "")
-    model = os.environ.get("LLM_MODEL", "")
-
-    if not api_key or not base_url or not model:
-        return {"summary": "LLM 未配置，无法进行分析。"}
-
-    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
-
-    try:
-        # Step 1: LLM decides what additional queries are needed
-        plan_prompt = f"""{system_prompt}
-
-你是一个外汇交易数据分析助手。用户正在追问之前查询结果的原因。
-请先判断：需要查询哪些额外数据才能回答用户的问题？
-
-输出JSON格式：
-```json
-{{
-  "queries": [
-    {{"text": "自然语言查询", "reason": "为什么需要这个数据"}}
-  ]
-}}
-```
-如果不需要额外数据，返回空数组。
-
-{data_desc}
-
-用户问题：{text}"""
-
-        plan_resp = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model=model, temperature=0.1,
-                messages=[{"role": "user", "content": plan_prompt}],
-                timeout=5,
-            )
-        )
-        plan_content = plan_resp.choices[0].message.content or "{}"
-        # Parse JSON from LLM response
-        plan = _extract_json_from_text(plan_content) or {"queries": []}
-        queries = plan.get("queries", [])
-
-        # Step 2: Execute each follow-up query
-        extra_data = []
-        for q in queries[:3]:  # Max 3 follow-up queries
-            q_text = q.get("text", "")
-            if not q_text:
-                continue
-            # Parse the query
-            q_parsed = rule_based_parse(q_text)
-            q_confidence = _rule_confidence(q_text, q_parsed)
-            if q_confidence < 0.8:
-                llm_result = await asyncio.to_thread(llm_parse, q_text, system_prompt)
-                if llm_result:
-                    q_parsed = gatekeep(llm_result, q_text)
-                else:
-                    q_parsed = gatekeep(q_parsed, q_text)
-            # Build and execute SQL
-            try:
-                q_sql = _route_sql(q_parsed)
-                with get_db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(q_sql)
-                        q_cols = [desc[0] for desc in cur.description] if cur.description else []
-                        q_rows = [list(row) for row in cur.fetchall()]
-                extra_data.append({
-                    "query": q_text,
-                    "columns": q_cols,
-                    "rows": q_rows[:20],
-                    "row_count": len(q_rows),
-                })
-            except Exception as exc:
-                extra_data.append({"query": q_text, "error": str(exc)})
-
-        # Step 3: LLM synthesizes final analysis
-        analysis_prompt = f"""你是一个外汇交易数据分析助手。
-
-{data_desc}
-
-额外查询的数据：
-{json.dumps(extra_data, ensure_ascii=False, indent=2) if extra_data else "（无需额外查询）"}
-
-请基于以上所有数据，分析用户问题的具体原因。用中文自然语言回答。
-如果发现了突增的客户或银行，说明是哪些。如果数据不足以分析，诚实说明。
-
-用户问题：{text}"""
-
-        analysis_resp = client.chat.completions.create(
-            model=model, temperature=0.3,
-            messages=[{"role": "user", "content": analysis_prompt}],
-            timeout=60,
-        )
-        content = analysis_resp.choices[0].message.content or ""
-        return {"summary": content.strip()}
-
-    except Exception as exc:
-        logger.exception("Analysis failed")
-        return {"summary": f"分析请求失败：{exc}"}
-
-
-def _extract_json_from_text(text: str) -> dict | None:
-    """Extract JSON object from LLM text response."""
-    import re as _re
-    m = _re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, _re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except (json.JSONDecodeError, TypeError):
-            pass
-    try:
-        return json.loads(text.strip())
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return None
-
-
-def _route_sql(parsed: dict) -> str:
-    """Build SQL from parsed params (same routing as /api/query)."""
-    buy_sell = parsed.get("buy_sell") or None
-    cust_name = parsed.get("cust_name") or None
-    special_states = parsed.get("special_states")
-    if isinstance(special_states, str) and special_states:
-        special_states = [s.strip() for s in special_states.split(",")]
-    else:
-        special_states = None
-
-    amount_filter = parsed.get("amount_filter")
-    top_n = parsed.get("top_n")
-
-    if amount_filter:
-        return TradeQueryBuilder.build_filtered_query(
-            product_type=parsed["product_type"],
-            date_start=parsed.get("date_start") or None,
-            date_end=parsed.get("date_end") or None,
-            special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed.get("bank_name") or None,
-            amount_op=amount_filter["amount_op"],
-            amount_value=amount_filter["amount_value"],
-            hedge_ratio=parsed.get("hedge_ratio", False),
-            dimension=parsed.get("dimension", "bank"),
-            cust_name=cust_name, appid=parsed.get("appid"),
-        )
-    elif top_n and top_n > 0:
-        return TradeQueryBuilder.build_ranking_query(
-            product_type=parsed["product_type"],
-            date_start=parsed.get("date_start") or None,
-            date_end=parsed.get("date_end") or None,
-            special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed.get("bank_name") or None, top_n=top_n,
-            dimension=parsed.get("dimension", "bank"),
-            hedge_ratio=parsed.get("hedge_ratio", False),
-            cust_name=cust_name, appid=parsed.get("appid"),
-        )
-    elif parsed.get("hedge_ratio"):
-        return TradeQueryBuilder.build_hedge_ratio_query(
-            product_type=parsed["product_type"],
-            date_start=parsed.get("date_start") or None,
-            date_end=parsed.get("date_end") or None,
-            special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed.get("bank_name") or None,
-            dimension=parsed.get("dimension", "bank"),
-            cust_name=cust_name, appid=parsed.get("appid"),
-        )
-    elif parsed.get("aggregate"):
-        return TradeQueryBuilder.build_aggregate_query(
-            product_type=parsed["product_type"],
-            date_start=parsed.get("date_start") or None,
-            date_end=parsed.get("date_end") or None,
-            special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed.get("bank_name") or None,
-            cust_name=cust_name, appid=parsed.get("appid"),
-            dimension=parsed.get("dimension"),
-        )
-    else:
-        return TradeQueryBuilder.build_query(
-            product_type=parsed["product_type"],
-            date_start=parsed.get("date_start") or None,
-            date_end=parsed.get("date_end") or None,
-            special_states=special_states, buy_sell=buy_sell,
-            bank_name=parsed.get("bank_name") or None,
-            cust_name=cust_name, appid=parsed.get("appid"),
-        )
-
-
-@app.get("/")
-def index():
-    dist_index = FRONTEND_DIR / "dist" / "index.html"
-    if dist_index.exists():
-        return FileResponse(dist_index)
-    return FileResponse(FRONTEND_DIR / "index.html")
-
-
-# Serve static assets from Vite build output (production mode)
-_dist_assets = FRONTEND_DIR / "dist" / "assets"
-if _dist_assets.exists():
-    app.mount("/assets", StaticFiles(directory=str(_dist_assets)), name="assets")
-
-
-# ---- LangGraph orchestration endpoint ----
+# ── LangGraph orchestration endpoint ──────────────────────────────────────────
 
 from langgraph.pipeline import build_main_graph
 _langgraph_app = build_main_graph()
@@ -1128,13 +890,12 @@ async def api_chat(request: Request):
         logger.exception("LangGraph /api/chat failed: %s", text)
         return JSONResponse(status_code=500, content={
             "error": f"{type(exc).__name__}: {exc}",
-            "sql": "",
-            "params": {},
-            "columns": [],
-            "rows": [],
-            "row_count": 0,
-            "comparison": None,
-            "summary": "",
-            "chartOption": {},
-            "insights": [],
         })
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
