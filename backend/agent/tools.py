@@ -416,3 +416,100 @@ def decompose_change(
         "total_change_pct": total_change_pct,
         "drivers": drivers,
     }
+
+
+# OpenAI-compatible tool definitions for LLM tool calling
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metrics",
+            "description": "查询指定的业务指标数据，支持按维度分组、按时间范围过滤、同比/环比对比、取 Top N。"
+                           "可用于查询交易量、套保率等指标。如果用户问的是汇总数据（如\"总交易量多少\"），"
+                           "应查询带\"yoy\"或\"mom\"对比的版本以获得变化率。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metrics": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["trading_volume", "hedge_ratio"]},
+                        "description": "要查询的指标列表",
+                    },
+                    "dimensions": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["product_type", "bank", "manager_name", "customer", "month"]},
+                        "description": "分组维度（不传则返回汇总）",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "过滤条件，可选字段：product_type, bank_name, cust_name, buy_sell, special_states, appid",
+                    },
+                    "date_start": {
+                        "type": "string",
+                        "description": "开始日期 YYYY-MM-DD",
+                    },
+                    "date_end": {
+                        "type": "string",
+                        "description": "结束日期 YYYY-MM-DD",
+                    },
+                    "comparison": {
+                        "type": "string",
+                        "enum": ["yoy", "mom", ""],
+                        "description": "对比模式：yoy=同比, mom=环比",
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "description": "返回前 N 条（默认不限）",
+                    },
+                },
+                "required": ["metrics"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "decompose_change",
+            "description": "分析指标变化的原因，按指定维度拆解各成员的贡献度。"
+                           "例如：交易量同比增加了1000万，各机构分别贡献了多少。"
+                           "contrib_pct 表示该成员对总变化的贡献百分比。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric": {
+                        "type": "string",
+                        "enum": ["trading_volume", "hedge_ratio"],
+                        "description": "要分析的指标",
+                    },
+                    "date_start": {
+                        "type": "string",
+                        "description": "当前期开始日期 YYYY-MM-DD",
+                    },
+                    "date_end": {
+                        "type": "string",
+                        "description": "当前期结束日期 YYYY-MM-DD",
+                    },
+                    "comparison": {
+                        "type": "string",
+                        "enum": ["yoy", "mom"],
+                        "description": "对比模式：yoy=同比, mom=环比",
+                    },
+                    "by_dimension": {
+                        "type": "string",
+                        "enum": ["product_type", "bank", "manager_name", "customer", "month"],
+                        "description": "按哪个维度拆解变化",
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "description": "返回贡献度最大的前 N 个（默认5）",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "过滤条件",
+                    },
+                },
+                "required": ["metric", "date_start", "date_end", "comparison", "by_dimension"],
+            },
+        },
+    },
+]
