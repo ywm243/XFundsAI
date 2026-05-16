@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS turns (
     executed_sql TEXT NULL,
     result_summary TEXT NULL,
     user_feedback TEXT NULL,
+    importance TINYINT DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
     INDEX idx_session_turn (session_id, turn_index)
@@ -120,6 +121,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     INDEX idx_session (session_id),
     INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+    id INTEGER PRIMARY KEY AUTO_INCREMENT,
+    session_id VARCHAR(64) NOT NULL,
+    turn_id INTEGER NOT NULL,
+    user_query TEXT NOT NULL,
+    structured_data JSON,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_agent_memory_session (session_id),
+    INDEX idx_agent_memory_turn (session_id, turn_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 
@@ -133,11 +145,25 @@ def init_db() -> None:
                     stmt = stmt.strip()
                     if stmt:
                         cur.execute(stmt)
+
+                # Migrate: add importance column to existing turns tables
+                _migrate_add_column(cur, "turns", "importance",
+                                    "ALTER TABLE turns ADD COLUMN importance TINYINT DEFAULT 0")
+
             conn.commit()
             logger.info("MySQL database initialized at %s:%s/%s",
                         _config.host, _config.port, _config.database)
         finally:
             conn.close()
+
+
+def _migrate_add_column(cur, table: str, column: str, ddl: str) -> None:
+    """Safely add a column if it doesn't exist (MySQL < 8.0.29 compat)."""
+    try:
+        cur.execute(ddl)
+        logger.info("Migration: added column %s to %s", column, table)
+    except Exception:
+        pass  # Column already exists
 
 
 # ============================================================
@@ -429,18 +455,19 @@ def create_session(session_id: str, agent_type: str = "bi",
 
 def add_turn(session_id: str, turn_index: int, user_query: str,
              parsed_params: dict | None = None, executed_sql: str | None = None,
-             result_summary: str | None = None, user_feedback: str | None = None) -> int:
+             result_summary: str | None = None, user_feedback: str | None = None,
+             importance: int = 0) -> int:
     with _lock:
         conn = get_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO turns (session_id, turn_index, user_query,
-                       parsed_params, executed_sql, result_summary, user_feedback)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                       parsed_params, executed_sql, result_summary, user_feedback, importance)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     (session_id, turn_index, user_query,
                      json.dumps(parsed_params, ensure_ascii=False) if parsed_params else None,
-                     executed_sql, result_summary, user_feedback),
+                     executed_sql, result_summary, user_feedback, importance),
                 )
                 cur.execute(
                     "UPDATE sessions SET updated_at=%s WHERE id=%s",
@@ -495,6 +522,46 @@ def add_summary(session_id: str, summary_type: str, content: dict,
 # Migration from JSON files
 # ============================================================
 
+
+def _ensure_category(conn, agent_type: str, category: str, display_name: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT IGNORE INTO rule_categories (agent_type, category, display_name)
+               VALUES (%s, %s, %s)""",
+            (agent_type, category, display_name),
+        )
+        cur.execute(
+            "SELECT id FROM rule_categories WHERE agent_type=%s AND category=%s",
+            (agent_type, category),
+        )
+        return cur.fetchone()["id"]
+
+
+def _insert_rules(conn, category_id: int, rules: list, sub_type: str | None = None) -> int:
+    n = 0
+    for rule in rules:
+        keywords = rule.pop("keywords", None) or rule.pop("keyword", None)
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        if not keywords:
+            keywords = []
+        rule_data = {k: v for k, v in rule.items() if not k.startswith("_")}
+        if sub_type:
+            rule_data["sub_type"] = sub_type
+        is_ironclad = not rule.get("customer_reversible", True)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO rule_items (category_id, keywords, rule_data, is_ironclad)
+                   VALUES (%s, %s, %s, %s)""",
+                (category_id, json.dumps(keywords, ensure_ascii=False),
+                 json.dumps(rule_data, ensure_ascii=False),
+                 1 if is_ironclad else 0),
+            )
+        n += 1
+    return n
+
+
 def migrate_from_json(rules_path: str | None = None) -> int:
     if rules_path is None:
         rules_path = str(
@@ -514,45 +581,9 @@ def migrate_from_json(rules_path: str | None = None) -> int:
         "special_states":        ("special_trade_type",    "特殊交易类型映射", "common", "state"),
         "trade_class":           ("special_trade_type",    "特殊交易类型映射", "common", "class"),
         "time_expressions":      ("time_expressions",      "时间表达式映射",   "common", None),
+        "dimension_labels":      ("dimension_labels",      "维度标签配置",     "common", None),
     }
     BI_CATEGORIES = {"comparison_modifiers"}
-
-    def _ensure_category(conn, agent_type: str, category: str, display_name: str) -> int:
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT IGNORE INTO rule_categories (agent_type, category, display_name)
-                   VALUES (%s, %s, %s)""",
-                (agent_type, category, display_name),
-            )
-            cur.execute(
-                "SELECT id FROM rule_categories WHERE agent_type=%s AND category=%s",
-                (agent_type, category),
-            )
-            return cur.fetchone()["id"]
-
-    def _insert_rules(conn, category_id: int, rules: list, sub_type: str | None = None) -> int:
-        n = 0
-        for rule in rules:
-            keywords = rule.pop("keywords", None) or rule.pop("keyword", None)
-            if isinstance(keywords, str):
-                keywords = [keywords]
-            if not keywords:
-                keywords = []
-            rule_data = {k: v for k, v in rule.items() if not k.startswith("_")}
-            if sub_type:
-                rule_data["sub_type"] = sub_type
-            is_ironclad = not rule.get("customer_reversible", True)
-
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO rule_items (category_id, keywords, rule_data, is_ironclad)
-                       VALUES (%s, %s, %s, %s)""",
-                    (category_id, json.dumps(keywords, ensure_ascii=False),
-                     json.dumps(rule_data, ensure_ascii=False),
-                     1 if is_ironclad else 0),
-                )
-            n += 1
-        return n
 
     with _lock:
         conn = get_conn()
@@ -583,6 +614,155 @@ def migrate_from_json(rules_path: str | None = None) -> int:
             conn.close()
 
 
+def save_agent_memory(session_id: str, turn_id: int, user_query: str,
+                      structured_data: dict) -> int:
+    """Save an agent memory turn."""
+    with _lock:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO agent_memory (session_id, turn_id, user_query, structured_data)
+                       VALUES (%s, %s, %s, %s)""",
+                    (session_id, turn_id, user_query,
+                     json.dumps(structured_data, ensure_ascii=False) if structured_data else None),
+                )
+                conn.commit()
+                return cur.lastrowid
+        except pymysql.err.ProgrammingError:
+            logger.warning("agent_memory table does not exist, skipping save")
+            return 0
+        finally:
+            conn.close()
+
+
+def get_agent_memory(session_id: str, last_n: int = 5) -> list[dict]:
+    """Get recent agent memory turns."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM agent_memory WHERE session_id=%s
+                   ORDER BY turn_id DESC LIMIT %s""",
+                (session_id, last_n),
+            )
+            rows = cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("structured_data"), str):
+                    d["structured_data"] = json.loads(d["structured_data"])
+                result.append(d)
+            return list(reversed(result))
+    except pymysql.err.ProgrammingError:
+        logger.warning("agent_memory table does not exist, returning empty")
+        return []
+    finally:
+        conn.close()
+
+
+def load_dimension_labels_from_db() -> dict | None:
+    """Load dimension labels config from DB rules.
+
+    Returns dict with keys:
+      - dimensions: {dim_key: {display_label, count_unit, sql_select_col,
+                               sql_group_col, join_clause, label_col_names}}
+      - comparison_labels: {yoy: "同比", ...}
+      - amount_col_names: set of column name strings
+      - label_col_names: set of all label column names (union)
+    """
+    init_db()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM rule_categories WHERE category=%s AND agent_type=%s",
+                ("dimension_labels", "common"),
+            )
+            cat = cur.fetchone()
+            if not cat:
+                return None
+
+            cur.execute(
+                "SELECT keywords, rule_data FROM rule_items WHERE category_id=%s AND is_active=1",
+                (cat["id"],),
+            )
+            items = cur.fetchall()
+
+        dim_config = {}
+        comparison_labels = None
+        amount_col_names = None
+        all_label_cols = set()
+
+        for item in items:
+            rd = item["rule_data"]
+            if isinstance(rd, str):
+                rd = json.loads(rd)
+            kw = item["keywords"]
+            if isinstance(kw, str):
+                kw = json.loads(kw)
+
+            dim_key = kw[0] if kw else None
+            if dim_key == "_meta":
+                comparison_labels = rd.get("comparison_labels", {})
+                amount_col_names = set(rd.get("amount_col_names", []))
+            elif dim_key:
+                dim_config[dim_key] = {
+                    "display_label": rd.get("display_label", dim_key),
+                    "count_unit": rd.get("count_unit", "个"),
+                    "sql_select_col": rd.get("sql_select_col", ""),
+                    "sql_group_col": rd.get("sql_group_col", ""),
+                    "join_clause": rd.get("join_clause", ""),
+                    "label_col_names": rd.get("label_col_names", []),
+                }
+                for col in rd.get("label_col_names", []):
+                    all_label_cols.add(col.upper())
+
+        if not dim_config:
+            return None
+
+        return {
+            "dimensions": dim_config,
+            "comparison_labels": comparison_labels or {},
+            "amount_col_names": amount_col_names or set(),
+            "label_col_names": all_label_cols,
+        }
+    finally:
+        conn.close()
+
+
+def _seed_dimension_labels_if_missing() -> None:
+    """Idempotently seed dimension_labels category if not present."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM rule_categories WHERE category=%s AND agent_type=%s",
+                ("dimension_labels", "common"),
+            )
+            if cur.fetchone():
+                return
+
+        rules_path = str(
+            Path(__file__).resolve().parent.parent / "knowledge_base" / "semantic_rules.json"
+        )
+        with open(rules_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        dim_data = data.get("dimension_labels")
+        if not dim_data or "rules" not in dim_data:
+            logger.warning("dimension_labels not found in semantic_rules.json, skipping")
+            return
+
+        rules_list = dim_data["rules"]
+        cat_id = _ensure_category(conn, "common", "dimension_labels", "维度标签配置")
+        _insert_rules(conn, cat_id, rules_list)
+        conn.commit()
+        logger.info("Seeded dimension_labels category with %d items", len(rules_list))
+    finally:
+        conn.close()
+
+
 def _auto_migrate() -> None:
     init_db()
     conn = get_conn()
@@ -593,6 +773,8 @@ def _auto_migrate() -> None:
         if cnt == 0:
             logger.info("MySQL rule store is empty, running auto-migration...")
             migrate_from_json()
+        else:
+            _seed_dimension_labels_if_missing()
     finally:
         conn.close()
 
