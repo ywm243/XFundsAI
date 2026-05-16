@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 
 from llm_parser.parser import rule_based_parse, compute_comparison_dates, _rule_confidence
-from llm_parser.llm_client import llm_parse
+from llm_parser.llm_client import llm_parse, llm_chat
 from llm_parser.rules_engine import gatekeep, reload_rules
 from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
 from db.query_builder import TradeQueryBuilder
@@ -891,6 +891,46 @@ async def api_chat(request: Request):
         return JSONResponse(status_code=500, content={
             "error": f"{type(exc).__name__}: {exc}",
         })
+
+
+# ── Analysis endpoint ─────────────────────────────────────────────────────────
+
+
+@app.post("/api/analyze")
+async def analyze(body: dict):
+    """Use LLM to analyze previous query results."""
+    text = body.get("text", "")
+    previous_data = body.get("previous_data", {})
+    context = body.get("context", [])
+
+    summary = previous_data.get("summary", "")
+    comparison = previous_data.get("comparison", {})
+
+    system_prompt = (
+        "你是一个外汇交易数据分析助手。根据用户的问题和已有的查询结果数据，"
+        "给出专业、简洁的分析。分析要基于数据说话，不要编造数字。"
+        "回答控制在 200 字以内。"
+    )
+
+    cmp_info = ""
+    if comparison:
+        cmp_type = comparison.get("type", "")
+        label = comparison.get("label", cmp_type)
+        change = comparison.get("change_amount", 0)
+        rate = comparison.get("change_rate", 0)
+        cmp_info = f"\n{label}变化: {change:+,.2f} USD ({rate:+.2f}%)"
+
+    user_prompt = (
+        f"用户问题: {text}\n"
+        f"当前数据摘要: {summary}{cmp_info}\n"
+        f"请分析可能的原因。"
+    )
+
+    result_text = await asyncio.to_thread(llm_chat, system_prompt, user_prompt)
+    if not result_text:
+        return JSONResponse(status_code=503, content={"error": "分析服务暂不可用，请稍后重试"})
+
+    return {"summary": result_text}
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

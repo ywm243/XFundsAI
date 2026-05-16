@@ -102,3 +102,32 @@ def llm_parse(text: str, system_prompt: str) -> dict | None:
     except Exception as exc:
         logger.warning("LLM call failed: %s", exc)
         return None
+
+
+def llm_chat(system_prompt: str, user_prompt: str) -> str | None:
+    """Call LLM for free-text chat (analysis, explanation, etc.), returns text response."""
+    api_key = os.environ.get("LLM_API_KEY", "")
+    base_url = os.environ.get("LLM_BASE_URL", "")
+    model = os.environ.get("LLM_MODEL", "")
+
+    if not api_key or not base_url or not model:
+        logger.warning("LLM not configured for chat")
+        return None
+
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0.3,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=30,
+        )
+        content = response.choices[0].message.content
+        return content or None
+    except Exception as exc:
+        logger.warning("LLM chat call failed: %s", exc)
+        return None

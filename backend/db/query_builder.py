@@ -86,7 +86,7 @@ class TradeQueryBuilder:
 
         if cust_name:
             cls._validate_name(cust_name)
-            safe_cust = cust_name.replace"'", "''")
+            safe_cust = cust_name.replace("'", "''")
             conditions.append(f"t.CUSTNAME='{safe_cust}'")
 
         if special_states is not None and len(special_states) > 0:
