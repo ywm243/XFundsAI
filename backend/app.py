@@ -21,7 +21,7 @@ from openai import OpenAI
 
 from llm_parser.parser import rule_based_parse, compute_comparison_dates, _rule_confidence
 from llm_parser.llm_client import llm_parse, llm_chat
-from llm_parser.rules_engine import gatekeep, reload_rules
+from llm_parser.rules_engine import gatekeep, reload_rules, load_dimension_config
 from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
 from db.query_builder import TradeQueryBuilder
 from db.connection import get_db
@@ -30,11 +30,16 @@ from admin_routes import router as admin_router
 import uuid
 from datetime import datetime
 
+logger = logging.getLogger(__name__)
+
 # Initialize store on startup
 init_db()
 _auto_migrate()
 
-logger = logging.getLogger(__name__)
+# Load dimension config from rules DB and inject into query builder
+_dimension_config = load_dimension_config()
+TradeQueryBuilder.configure_dimensions(_dimension_config.get("dimensions", {}))
+logger.info("Dimension config loaded (%d dimensions)", len(_dimension_config.get("dimensions", {})))
 
 from mcp.server import create_http_app, get_session_manager
 _mcp_asgi = create_http_app()
@@ -221,7 +226,7 @@ def _compute_comparison(current_rows, compare_rows, comparison, date_start, date
     compare_amount, date_start, date_end, cmp_start, cmp_end.
     """
     amt_idx = _find_amount_col(cols) if cols else 0
-    label_map = {"yoy": "同比", "mom": "环比"}
+    label_map = _dimension_config.get("comparison_labels", {"yoy": "同比", "mom": "环比"})
     total_current = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in current_rows) if current_rows else 0
     total_compare = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in compare_rows) if compare_rows else 0
 
@@ -498,6 +503,8 @@ def delete_session(session_id: str):
 def api_reload_rules():
     reload_rules()
     invalidate_cache()
+    cfg = load_dimension_config()
+    TradeQueryBuilder.configure_dimensions(cfg.get("dimensions", {}))
     return {"status": "ok", "message": "Rules and prompt cache refreshed"}
 
 
@@ -568,8 +575,47 @@ async def api_parse(request: Request):
 async def query(request: Request):
     body = await request.json()
     text = body.get("text", "")
+    mode = body.get("mode", "")
     pre_parsed = body.get("params")
     context = body.get("context")
+    session_id = body.get("session_id", "")
+
+    # ---- mode=analyze: LLM tool-calling analysis pipeline ----
+    if mode == "analyze":
+        rule_parsed = rule_based_parse(text)
+        confidence = _rule_confidence(text, rule_parsed)
+        if confidence >= 0.8 or context:
+            parsed = gatekeep(rule_parsed, text)
+        else:
+            system_prompt = build_system_prompt()
+            llm_result = await asyncio.to_thread(llm_parse, text, system_prompt)
+            if llm_result is not None:
+                parsed = gatekeep(llm_result, text)
+            else:
+                parsed = gatekeep(rule_parsed, text)
+
+        from agent.orchestrator import run_analysis
+        agent_result = run_analysis(
+            user_query=text,
+            session_id=session_id,
+            gatekeep_params=parsed,
+        )
+
+        return {
+            "summary": agent_result.get("summary", ""),
+            "chartOption": _build_chart_option(parsed, [], [], None) if parsed else None,
+            "insights": agent_result.get("insights", []),
+            "comparison": None,
+            "mode": "analyze",
+            "params": parsed,
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "sql": "",
+            "comparison_sql": None,
+            "validation_warnings": [],
+            "sql_validated": True,
+        }
 
     sql = None
     parsed = {}
@@ -673,8 +719,8 @@ async def query(request: Request):
 # ---- ResultCard builders ----
 
 
-_AMOUNT_COL_NAMES = {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"}
-_LABEL_COL_NAMES = {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"}
+_AMOUNT_COL_NAMES = _dimension_config.get("amount_col_names", {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"})
+_LABEL_COL_NAMES = _dimension_config.get("label_col_names", {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"})
 
 
 def _find_amount_col(cols: list) -> int:
@@ -706,9 +752,12 @@ def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None
     total_usd = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
     total_count = len(rows)
 
-    # Dimension label mapping
+    # Dimension label mapping (from rules config, fallback to defaults)
     dim = parsed.get("dimension", "bank")
-    dim_label = {"bank": "机构", "customer": "客户", "customer_id": "客户", "manager": "客户经理", "manager_name": "客户经理"}.get(dim, "机构")
+    dimensions_cfg = _dimension_config.get("dimensions", {})
+    dim_info = dimensions_cfg.get(dim, {})
+    dim_label = dim_info.get("display_label", "机构")
+    count_unit = dim_info.get("count_unit", "家")
 
     parts = [f"{date_start} ~ {date_end}"]
     if bank_name:
@@ -718,7 +767,7 @@ def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None
         # Aggregate query — each row is a group (institution / customer / manager)
         if not (bank_name and total_count == 1):
             # Skip "共1家机构" when user already specified a single bank
-            parts.append(f"共{total_count}家{dim_label}")
+            parts.append(f"共{total_count}{count_unit}{dim_label}")
     else:
         # Detail query — each row is a trade record
         parts.append(f"共{total_count}笔交易")
