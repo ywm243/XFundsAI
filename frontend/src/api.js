@@ -21,9 +21,10 @@ export async function parseQuery(text, context) {
   return resp.json()
 }
 
-export async function executeQuery(params, context) {
+export async function executeQuery(params, context, mode) {
   const body = { params }
   if (context) body.context = context
+  if (mode) body.mode = mode
   const resp = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -119,22 +119,31 @@ async function handleSend(text) {
 
   try {
     if (isAnalytical && messages.length > 1) {
-      // Analytical question → LLM analysis of previous results
+      // Analytical question → use mode=analyze pipeline
       const context = buildContext()
-      const prevData = getLastResultData()
-      const resp = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, context, previous_data: prevData }),
-      })
-      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`)
-      const analysis = await resp.json()
+      const result = await executeQuery({ text }, context, 'analyze')
+      if (result.error) {
+        messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
+        return
+      }
       messages[botIdx] = {
         type: 'bot',
-        mode: 'analysis',
-        text: analysis.summary,
+        mode: 'result_card',
+        data: {
+          columns: result.columns || [],
+          rows: result.rows || [],
+          row_count: result.row_count || 0,
+          sql: result.sql || '',
+          comparison_sql: result.comparison_sql || null,
+          params: result.params || {},
+          summary: result.summary || '',
+          chartOption: result.chartOption || null,
+          insights: result.insights || [],
+          comparison: result.comparison || null,
+          mode: 'analyze',
+        },
       }
-      _persistTurn(text, null, null, { summary: analysis.summary })
+      _persistTurn(text, result.params, result.sql, { summary: result.summary })
     } else {
       // Data query → parse → execute
       const context = buildContext()
