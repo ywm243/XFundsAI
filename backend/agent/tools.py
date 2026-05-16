@@ -165,6 +165,13 @@ def query_metrics(
             if f.get("bank_name"):
                 safe_name = f["bank_name"].replace("'", "''")
                 conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%')")
+            if f.get("buy_sell"):
+                conditions.append(f"t.BUYORSELL='{f['buy_sell']}'")
+            if f.get("special_states"):
+                raw = f["special_states"]
+                if isinstance(raw, str):
+                    vals = ",".join(s.strip() for s in raw.split(","))
+                    conditions.append(f"t.SPECIALSTATE IN ({vals})")
 
             where_clause = "\n  AND ".join(conditions)
 
