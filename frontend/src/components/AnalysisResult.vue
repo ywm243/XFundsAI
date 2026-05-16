@@ -8,12 +8,12 @@ const props = defineProps({
 
 // ── formatters ─────────────────────────────────────────
 function fmtNum(n) {
-  if (n == null || n === '') return '-'
+  if (n == null || n === '' || !Number.isFinite(n)) return '-'
   return Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 }
 
 function fmtPct(n) {
-  if (n == null || n === '') return '-'
+  if (n == null || n === '' || !Number.isFinite(n)) return '-'
   const s = (n >= 0 ? '+' : '') + Number(n).toFixed(2)
   return s + '%'
 }
@@ -34,16 +34,29 @@ const hasPositiveDrivers = (drivers) => drivers.some(d => d.contrib_pct > 0)
 const hasNegativeDrivers = (drivers) => drivers.some(d => d.contrib_pct < 0)
 
 // ── contribution bar column render ─────────────────────
-function renderContrib(row) {
+// Normalize against the max absolute contrib in the current dimension table
+// so bars are proportional even when contrib_pct > 100%
+const _maxContribCache = new WeakMap()
+
+function _getMaxContrib(drivers) {
+  if (_maxContribCache.has(drivers)) return _maxContribCache.get(drivers)
+  const maxVal = drivers.reduce((m, d) => Math.max(m, Math.abs(d.contrib_pct || 0)), 0) || 100
+  _maxContribCache.set(drivers, maxVal)
+  return maxVal
+}
+
+function renderContrib(row, index) {
   const pct = row.contrib_pct
   if (pct == null) return '-'
-  const absPct = Math.min(Math.abs(pct), 100)
+  const drivers = row._drivers_ref
+  const maxAbs = drivers ? _getMaxContrib(drivers) : 100
+  const barWidth = Math.min((Math.abs(pct) / maxAbs) * 100, 100)
   const color = pct >= 0 ? 'var(--success-text)' : 'var(--error)'
   return h('div', { class: 'contrib-cell' }, [
     h('div', {
       class: 'contrib-bar',
       style: {
-        width: absPct + '%',
+        width: barWidth + '%',
         backgroundColor: color,
       },
     }),
@@ -58,21 +71,24 @@ function renderChange(row) {
   return h('span', { style: { color } }, (v >= 0 ? '+' : '') + fmtNum(v))
 }
 
-const dimColumns = [
-  { title: '名称', key: 'dimension_value', ellipsis: { tooltip: true } },
-  {
-    title: '交易量变化',
-    key: 'change_value',
-    render: renderChange,
-    sorter: (a, b) => (a.change_value || 0) - (b.change_value || 0),
-  },
-  {
-    title: '贡献度',
-    key: 'contrib_pct',
-    render: renderContrib,
-    sorter: (a, b) => Math.abs(b.contrib_pct || 0) - Math.abs(a.contrib_pct || 0),
-  },
-]
+function getDimColumns(drivers) {
+  const contribRenderer = (row) => renderContrib(row, 0)
+  return [
+    { title: '名称', key: 'dimension_value', ellipsis: { tooltip: true } },
+    {
+      title: '交易量变化',
+      key: 'change_value',
+      render: renderChange,
+      sorter: (a, b) => (a.change_value || 0) - (b.change_value || 0),
+    },
+    {
+      title: '贡献度',
+      key: 'contrib_pct',
+      render: contribRenderer,
+      sorter: (a, b) => Math.abs(b.contrib_pct || 0) - Math.abs(a.contrib_pct || 0),
+    },
+  ]
+}
 </script>
 
 <template>
@@ -120,8 +136,8 @@ const dimColumns = [
         </div>
 
         <NDataTable
-          :columns="dimColumns"
-          :data="dim.drivers"
+          :columns="getDimColumns(dim.drivers)"
+          :data="dim.drivers.map(d => ({...d, _drivers_ref: dim.drivers}))"
           :max-height="320"
           :bordered="false"
           size="small"

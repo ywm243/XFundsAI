@@ -150,7 +150,20 @@ async function handleSend(text) {
           mode: 'analyze',
         },
       }
-      _persistTurn(text, result.params, result.sql, { summary: result.summary })
+      _persistTurn(text, result.params, result.sql, {
+        columns: result.columns || [],
+        rows: result.rows || [],
+        row_count: result.row_count || 0,
+        sql: result.sql || '',
+        comparison_sql: result.comparison_sql || null,
+        params: result.params || {},
+        summary: result.summary || '',
+        chartOption: result.chartOption || null,
+        insights: result.insights || [],
+        comparison: result.comparison || null,
+        analysis_data: result.analysis_data || null,
+        mode: 'analyze',
+      })
     } else {
       // Data query → parse → execute
       const context = buildContext()

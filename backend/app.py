@@ -212,10 +212,8 @@ def _execute_oracle(sql: str) -> tuple:
             cur.execute(sql)
             cols = [desc[0] for desc in cur.description] if cur.description else []
             rows = [list(row) for row in cur.fetchmany(_MAX_ROWS)]
-            if cur.arraysize == _MAX_ROWS:
-                more = cur.fetchone()
-                if more is not None:
-                    logger.warning("Query result exceeds %d rows, truncated", _MAX_ROWS)
+            if cur.fetchone() is not None:
+                logger.warning("Query result exceeds %d rows, truncated", _MAX_ROWS)
     return cols, rows
 
 

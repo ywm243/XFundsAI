@@ -2,6 +2,10 @@
 
 Validates parameters before tool execution, returns human-readable
 Chinese error descriptions that the LLM can self-heal from.
+
+DEPRECATED: The deterministic analysis pipeline (orchestrator.py) no longer
+uses LLM tool-calling, so this validator is unused. Kept for backward
+compatibility if the tool-calling pipeline is re-enabled.
 """
 
 from agent.tools import METRICS, DIMENSIONS

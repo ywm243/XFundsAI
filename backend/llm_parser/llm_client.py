@@ -80,7 +80,7 @@ def llm_parse(text: str, system_prompt: str) -> dict | None:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            timeout=2,
+            timeout=30,
         )
         content = response.choices[0].message.content
         if not content:

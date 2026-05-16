@@ -165,18 +165,19 @@ def query_metrics(
             appid_val = f.get("appid")
             if appid_val is not None:
                 if isinstance(appid_val, list):
-                    vals = ",".join(str(a) for a in appid_val)
+                    vals = ",".join(str(int(a)) for a in appid_val)
                     conditions.append(f"t.APPID IN ({vals})")
                 else:
-                    conditions.append(f"t.APPID={appid_val}")
+                    conditions.append(f"t.APPID={int(appid_val)}")
             if date_start:
                 conditions.append(f"t.TRADEDATE>={int(date_start.replace('-', ''))}")
             if date_end:
                 conditions.append(f"t.TRADEDATE<={int(date_end.replace('-', ''))}")
             if f.get("bank_name"):
+                TradeQueryBuilder._validate_name(f["bank_name"])
                 safe_name = TradeQueryBuilder._escape_bank_name(f["bank_name"])
                 conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%' ESCAPE '\\')")
-            if f.get("buy_sell"):
+            if f.get("buy_sell") and f["buy_sell"] in ("B", "S"):
                 conditions.append(f"t.BUYORSELL='{f['buy_sell']}'")
             if f.get("special_states"):
                 raw = f["special_states"]

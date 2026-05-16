@@ -36,9 +36,9 @@ class TradeQueryBuilder:
         if appid is None:
             return "t.APPID IN (1,2)"
         if isinstance(appid, list):
-            vals = ",".join(str(a) for a in appid)
+            vals = ",".join(str(int(a)) for a in appid)
             return f"t.APPID IN ({vals})"
-        return f"t.APPID={appid}"
+        return f"t.APPID={int(appid)}"
 
     HEDGE_RATIO_SQL = (
         "ROUND(SUM(CASE WHEN t.PT IN ('fwd','swap') THEN t.USDAMOUNT ELSE 0 END) "
@@ -99,7 +99,7 @@ class TradeQueryBuilder:
             conditions.append(f"t.CUSTNAME='{safe_cust}'")
 
         if special_states is not None and len(special_states) > 0:
-            vals = ",".join(str(s) for s in special_states)
+            vals = ",".join(str(int(s)) for s in special_states)
             conditions.append(f"t.SPECIALSTATE IN ({vals})")
         elif hedge_ratio_default:
             conditions.append("t.SPECIALSTATE=0")

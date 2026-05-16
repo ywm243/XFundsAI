@@ -20,6 +20,13 @@ _oracle_error: str | None = None
 _pool = None
 
 
+def _session_callback(conn):
+    """Initialize NLS settings for each pooled connection."""
+    with conn.cursor() as cur:
+        cur.execute("ALTER SESSION SET NLS_DATE_FORMAT='YYYY-MM-DD'")
+        cur.execute("ALTER SESSION SET NLS_NUMERIC_CHARACTERS='.,'")
+
+
 def _ensure_oracle() -> None:
     """Lazy-init Oracle client on first use (not on import).
 
@@ -41,6 +48,7 @@ def _ensure_oracle() -> None:
             min=1,
             max=10,
             getmode=oracledb.POOL_GETMODE_WAIT,
+            session_callback=_session_callback,
         )
         _oracle_ready = True
         logger.info("Oracle client + pool initialized: %s (min=1, max=10)", IC_DIR)
@@ -59,4 +67,4 @@ def get_db():
     try:
         yield conn
     finally:
-        _pool.drop(conn)
+        _pool.release(conn)
