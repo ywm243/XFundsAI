@@ -107,9 +107,12 @@ def query_metrics(
     if is_hedge_ratio and not dimensions:
         # Hedge ratio aggregate query
         sql = TradeQueryBuilder.build_hedge_ratio_query(
+            product_type=f.get("product_type", "all"),
             dimension="bank",
             date_start=date_start or None,
             date_end=date_end or None,
+            buy_sell=f.get("buy_sell"),
+            special_states=f.get("special_states"),
             appid=f.get("appid"),
             bank_name=f.get("bank_name"),
             cust_name=f.get("cust_name"),
@@ -138,40 +141,106 @@ def query_metrics(
         dim = dimensions[0]
         dim_info = DIMENSIONS.get(dim, DIMENSIONS["bank"])
 
-        if is_hedge_ratio:
+        # Custom dimensions that TradeQueryBuilder._group_cols() doesn't support
+        if dim in ("month", "product_type"):
+            f = _build_filters(filters)
+            f.setdefault("product_type", "all")
+
+            select_col = dim_info["select_col"]
+            group_col = dim_info["group_col"]
+
+            # Build WHERE conditions
+            conditions = ["t.TRADESTATUS=0"]
+            appid_val = f.get("appid")
+            if appid_val is not None:
+                if isinstance(appid_val, list):
+                    vals = ",".join(str(a) for a in appid_val)
+                    conditions.append(f"t.APPID IN ({vals})")
+                else:
+                    conditions.append(f"t.APPID={appid_val}")
+            if date_start:
+                conditions.append(f"t.TRADEDATE>={int(date_start.replace('-', ''))}")
+            if date_end:
+                conditions.append(f"t.TRADEDATE<={int(date_end.replace('-', ''))}")
+            if f.get("bank_name"):
+                safe_name = f["bank_name"].replace("'", "''")
+                conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%')")
+
+            where_clause = "\n  AND ".join(conditions)
+
+            # Build FROM clause (UNION ALL of views)
+            pt = f.get("product_type", "all")
+            VIEW_MAP = {"spot": "XF_FX_SPOTTRADE_VIEW", "fwd": "XF_FX_FWDTRADE_VIEW", "swap": "XF_FX_SWAPTRADE_VIEW"}
+            COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME"]
+
+            if pt == "all":
+                subs = []
+                for view in VIEW_MAP.values():
+                    subs.append(f"SELECT {', '.join(COMMON_FIELDS)} FROM {view}")
+                from_sql = "(\n    " + "\n    UNION ALL\n    ".join(subs) + "\n) t"
+            else:
+                view = VIEW_MAP.get(pt)
+                from_sql = f"(\n    SELECT {', '.join(COMMON_FIELDS)} FROM {view}\n) t"
+
+            sql = (
+                f"SELECT {select_col}, SUM(t.USDAMOUNT) as TOTAL_AMOUNT, COUNT(*) as TRADE_COUNT\n"
+                f"FROM {from_sql}\n"
+                f"WHERE {where_clause}\n"
+                f"GROUP BY {group_col}\n"
+                f"ORDER BY TOTAL_AMOUNT DESC"
+            )
+
+            cols, rows = _execute_sql(sql)
+            data = _convert_rows_to_dicts(cols, rows)
+
+            total_amount = sum(float(r[0]) for r in rows if r and r[0] is not None) if rows else 0
+            summary = {"total_trading_volume": total_amount}
+
+        elif is_hedge_ratio:
             sql = TradeQueryBuilder.build_hedge_ratio_query(
+                product_type=f.get("product_type", "all"),
                 dimension=dim,
                 date_start=date_start or None,
                 date_end=date_end or None,
+                buy_sell=f.get("buy_sell"),
+                special_states=f.get("special_states"),
                 appid=f.get("appid"),
                 bank_name=f.get("bank_name"),
                 cust_name=f.get("cust_name"),
             )
+            cols, rows = _execute_sql(sql)
+            data = _convert_rows_to_dicts(cols, rows)
+            total_amount = 0
+            summary = {}
+
         else:
             sql = TradeQueryBuilder.build_ranking_query(
+                product_type=f.get("product_type", "all"),
                 dimension=dim,
-                top_n=top_n or 100,
+                top_n=top_n if top_n and top_n > 0 else 100,
                 date_start=date_start or None,
                 date_end=date_end or None,
+                buy_sell=f.get("buy_sell"),
+                special_states=f.get("special_states"),
                 appid=f.get("appid"),
                 bank_name=f.get("bank_name"),
                 cust_name=f.get("cust_name"),
             )
-
-        cols, rows = _execute_sql(sql)
-        data = _convert_rows_to_dicts(cols, rows)
-
-        # Total summary
-        total_amount = sum(
-            float(r[0]) for r in rows if r and r[0] is not None
-        ) if not is_hedge_ratio else 0
-        summary = {"total_trading_volume": total_amount} if not is_hedge_ratio else {}
+            cols, rows = _execute_sql(sql)
+            data = _convert_rows_to_dicts(cols, rows)
+            total_amount = sum(
+                float(r[0]) for r in rows if r and r[0] is not None
+            )
+            summary = {"total_trading_volume": total_amount}
 
     else:
         # Aggregate (single total) query
         sql = TradeQueryBuilder.build_aggregate_query(
+            product_type=f.get("product_type", "all"),
             date_start=date_start or None,
             date_end=date_end or None,
+            buy_sell=f.get("buy_sell"),
+            special_states=f.get("special_states"),
             appid=f.get("appid"),
             bank_name=f.get("bank_name"),
             cust_name=f.get("cust_name"),
