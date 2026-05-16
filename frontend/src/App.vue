@@ -146,6 +146,7 @@ async function handleSend(text) {
           chartOption: result.chartOption || null,
           insights: result.insights || [],
           comparison: result.comparison || null,
+          analysis_data: result.analysis_data || null,
           mode: 'analyze',
         },
       }

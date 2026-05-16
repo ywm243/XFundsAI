@@ -2,6 +2,12 @@ import re
 
 
 class TradeQueryBuilder:
+    _dimension_config: dict | None = None
+
+    @classmethod
+    def configure_dimensions(cls, config: dict | None) -> None:
+        """Set dimension configuration from the rule engine (injected by app.py)."""
+        cls._dimension_config = config
     VIEW_MAP = {
         "spot": "XF_FX_SPOTTRADE_VIEW",
         "fwd": "XF_FX_FWDTRADE_VIEW",
@@ -27,9 +33,12 @@ class TradeQueryBuilder:
 
     @staticmethod
     def _appid_filter(appid):
-        if appid is not None:
-            return f"t.APPID={appid}"
-        return "t.APPID IN (1,2)"
+        if appid is None:
+            return "t.APPID IN (1,2)"
+        if isinstance(appid, list):
+            vals = ",".join(str(a) for a in appid)
+            return f"t.APPID IN ({vals})"
+        return f"t.APPID={appid}"
 
     HEDGE_RATIO_SQL = (
         "ROUND(SUM(CASE WHEN t.PT IN ('fwd','swap') THEN t.USDAMOUNT ELSE 0 END) "
@@ -146,7 +155,18 @@ class TradeQueryBuilder:
 
     @classmethod
     def _join_clause(cls, dimension, bank_name):
-        """LEFT JOIN XF_BASE_BANK, only needed for bank dimension queries."""
+        """LEFT JOIN XF_BASE_BANK, only needed for bank dimension queries.
+
+        Uses dimension_config from rules when available, falls back to hardcoded logic.
+        """
+        if cls._dimension_config:
+            dim = cls._dimension_config.get(dimension)
+            if dim and dim.get("join_clause"):
+                return dim["join_clause"]
+            if bank_name:
+                bank_dim = cls._dimension_config.get("bank")
+                if bank_dim and bank_dim.get("join_clause"):
+                    return bank_dim["join_clause"]
         if dimension == "bank" or bank_name:
             return "LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID"
         return ""
@@ -224,13 +244,12 @@ class TradeQueryBuilder:
     def _group_cols(cls, dimension):
         """Return (select_col, group_col) based on dimension.
 
-        Supported dimensions:
-          bank           → 机构名称 (b.DIPNAME)
-          customer       → 客户名称 (t.CUSTNAME)
-          customer_id    → 客户号   (t.CUSTOMERID)
-          manager        → 客户经理ID (t.CUSTMAINMANAGER)
-          manager_name   → 客户经理名称 (t.CUSTMANAGERNAME)
+        Uses dimension_config from rules when available, falls back to hardcoded defaults.
         """
+        if cls._dimension_config:
+            dim = cls._dimension_config.get(dimension)
+            if dim and dim.get("sql_select_col") and dim.get("sql_group_col"):
+                return (dim["sql_select_col"], dim["sql_group_col"])
         mapping = {
             "bank": ("b.DIPNAME as 机构名称", "b.DIPNAME"),
             "customer": ("t.CUSTNAME as 客户名称", "t.CUSTNAME"),

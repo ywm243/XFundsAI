@@ -47,6 +47,15 @@ def _validate_rule_item(category: dict, keywords: list[str], rule_data: dict,
         if val not in {1, 3, 4, 5}:
             errors.append(f"特殊状态值'{val}'不在允许范围内，有效值为 1(逾期),3(展期),4(提前交割),5(平仓)。注意：在途不是SPECIALSTATE，在途=totaldelivery剩余金额>0")
 
+    # Dimension labels
+    if category["category"] == "dimension_labels":
+        kw = keywords[0] if keywords else ""
+        if kw != "_meta":
+            if not rule_data.get("display_label"):
+                errors.append("维度标签规则的 display_label 不能为空")
+            if not rule_data.get("sql_select_col"):
+                errors.append("维度标签规则的 sql_select_col 不能为空")
+
     # Trade class code range (for special_trade_type with sub_type containing 'class')
     if category["category"] == "special_trade_type" and "class" in (rule_data.get("sub_type") or ""):
         try:
@@ -255,4 +264,9 @@ def api_reload_rules():
 def _reload_all():
     reload_rules()
     invalidate_cache()
-    logger.info("Admin: all rule caches cleared")
+    # Reload dimension config and push to query builder
+    from llm_parser.rules_engine import load_dimension_config
+    from db.query_builder import TradeQueryBuilder
+    cfg = load_dimension_config()
+    TradeQueryBuilder.configure_dimensions(cfg.get("dimensions", {}))
+    logger.info("Admin: all rule caches cleared, dimension config refreshed")

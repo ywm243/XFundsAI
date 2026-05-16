@@ -594,6 +594,23 @@ async def query(request: Request):
             else:
                 parsed = gatekeep(rule_parsed, text)
 
+        # Inherit params from context (follow-up queries like "分析下原因")
+        if context:
+            inherited = _inherit_params_from_context(context, parsed)
+            if inherited:
+                for k, v in inherited.items():
+                    if k not in parsed or not parsed.get(k):
+                        parsed[k] = v
+                logger.info("Analyze inherited params from context: %s", {k: v for k, v in inherited.items() if v})
+            # Also inherit date range (not in _INHERIT_PARAMS)
+            dates = _inherit_dates_from_context(context)
+            if dates:
+                if not parsed.get("date_start"):
+                    parsed["date_start"] = dates["date_start"]
+                if not parsed.get("date_end"):
+                    parsed["date_end"] = dates["date_end"]
+                logger.info("Analyze inherited dates: %s ~ %s", parsed.get("date_start"), parsed.get("date_end"))
+
         from agent.orchestrator import run_analysis
         agent_result = run_analysis(
             user_query=text,
@@ -607,6 +624,7 @@ async def query(request: Request):
             "insights": agent_result.get("insights", []),
             "comparison": None,
             "mode": "analyze",
+            "analysis_data": agent_result.get("analysis_data"),
             "params": parsed,
             "columns": [],
             "rows": [],

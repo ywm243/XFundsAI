@@ -310,7 +310,7 @@
       }
     ],
     "comparison_modifiers": {
-      "_description": "对比修饰符 — 当查询包含对比关键词时，在基础时间区间之外额外生成对比区间。'同步'在金融语境中等价于'同比'。",
+      "_description": "对比修饰符",
       "rules": [
         {
           "keyword": "同比",
@@ -394,6 +394,31 @@
       { "keywords": ["结售汇", "结汇售汇"], "value": 2, "meaning": "结售汇业务系统" }
     ],
     "default": null
+  },
+
+  "dimension_labels": {
+    "_description": "维度配置 — 显示标签、SQL列别名、JOIN逻辑（可经由Admin Rules系统动态配置）",
+    "rules": [
+      { "keyword": "bank", "display_label": "机构", "count_unit": "家",
+        "sql_select_col": "b.DIPNAME as 机构名称", "sql_group_col": "b.DIPNAME",
+        "join_clause": "LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID",
+        "label_col_names": ["DIPNAME", "BANKNAME"] },
+      { "keyword": "customer", "display_label": "客户", "count_unit": "个",
+        "sql_select_col": "t.CUSTNAME as 客户名称", "sql_group_col": "t.CUSTNAME",
+        "join_clause": "", "label_col_names": ["CUSTNAME"] },
+      { "keyword": "customer_id", "display_label": "客户", "count_unit": "个",
+        "sql_select_col": "t.CUSTOMERID as 客户号", "sql_group_col": "t.CUSTOMERID",
+        "join_clause": "", "label_col_names": ["CUSTOMERID"] },
+      { "keyword": "manager", "display_label": "客户经理", "count_unit": "位",
+        "sql_select_col": "t.CUSTMAINMANAGER as 客户经理ID", "sql_group_col": "t.CUSTMAINMANAGER",
+        "join_clause": "", "label_col_names": ["CUSTMAINMANAGER"] },
+      { "keyword": "manager_name", "display_label": "客户经理", "count_unit": "位",
+        "sql_select_col": "t.CUSTMANAGERNAME as 客户经理名称", "sql_group_col": "t.CUSTMANAGERNAME",
+        "join_clause": "", "label_col_names": ["CUSTMANAGERNAME"] },
+      { "keyword": "_meta",
+        "amount_col_names": ["USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"],
+        "comparison_labels": {"yoy": "同比", "mom": "环比"} }
+    ]
   },
 
   "bank_field": {

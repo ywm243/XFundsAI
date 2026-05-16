@@ -1,63 +1,184 @@
-"""Agent orchestration main loop.
+"""Agent orchestration — deterministic analysis pipeline.
 
-Flow (max 2 rounds):
-  1. LLM receives system prompt + user query
-  2. LLM decides to call tools (query_metrics / decompose_change)
-  3. ToolValidator validates parameters
-  4. Execute tool(s)
-  5. Return results to LLM
-  6. LLM decides if data is sufficient
-     - If yes: generate analysis text
-     - If no (and < 2 rounds): call more tools
-  7. Post-validate: extract numbers from LLM output, compare against tool data
+Flow:
+  1. Determine which dimensions to decompose based on already-specified filters
+  2. Auto-execute query_metrics (baseline with comparison) + decompose_change per dimension
+  3. Feed all real data to LLM — LLM only generates analysis text (no tools)
+  4. Post-validate numbers in LLM output against tool data
 """
 
 import json
 import logging
 from datetime import datetime
 
-from agent.tools import query_metrics, decompose_change, TOOL_DEFINITIONS
-from agent.validator import ToolValidator
+from agent.tools import query_metrics, decompose_change
 from agent.post_validator import PostValidator
 from agent.memory import AgentMemory
 from llm_parser.llm_client import llm_tool_call
 
 logger = logging.getLogger(__name__)
 
-_TOOL_MAP = {
-    "query_metrics": query_metrics,
-    "decompose_change": decompose_change,
+# Three core analysis dimensions
+ALL_DIMENSIONS = ["product_type", "bank", "customer"]
+
+DIMENSION_LABELS = {
+    "product_type": "产品类型",
+    "bank": "机构",
+    "customer": "客户",
 }
 
-MAX_ROUNDS = 2
+COMPARISON_LABELS = {
+    "yoy": "同比",
+    "mom": "环比",
+}
 
 
-def _build_system_prompt(user_query: str, context_prompt: str = "") -> str:
-    """Build system prompt for the analysis agent."""
+def _determine_analysis_dimensions(gatekeep_params: dict | None) -> list[str]:
+    """Determine which dimensions to decompose.
+
+    If a dimension is already specified in the filter, exclude it from decomposition.
+    E.g. bank_name=浙江分公司 → 机构已指定 → 分析产品和客户维度.
+    """
+    params = gatekeep_params or {}
+    specified = set()
+
+    if params.get("product_type") and params["product_type"] != "all":
+        specified.add("product_type")
+    if params.get("bank_name"):
+        specified.add("bank")
+    if params.get("cust_name"):
+        specified.add("customer")
+
+    return [d for d in ALL_DIMENSIONS if d not in specified]
+
+
+def _build_tool_filters(gatekeep_params: dict | None) -> dict:
+    """Extract filter keys from gatekeep_params for tools (query_metrics / decompose_change)."""
+    params = gatekeep_params or {}
+    filters = {}
+    if params.get("product_type") and params["product_type"] != "all":
+        filters["product_type"] = params["product_type"]
+    if params.get("bank_name"):
+        filters["bank_name"] = params["bank_name"]
+    if params.get("cust_name"):
+        filters["cust_name"] = params["cust_name"]
+    if params.get("buy_sell"):
+        filters["buy_sell"] = params["buy_sell"]
+    if params.get("special_states"):
+        filters["special_states"] = params["special_states"]
+    if params.get("appid"):
+        filters["appid"] = params["appid"]
+    return filters
+
+
+def _build_system_prompt(context_prompt: str = "") -> str:
+    """Build system prompt for text-only LLM analysis generation."""
     lines = [
-        "你是一个专业的外汇交易数据分析助手。你的任务是根据用户的提问，使用提供的工具查询真实数据并进行分析。",
+        "你是一个专业的外汇交易数据分析助手。",
+        "你的任务是根据提供的汇总数据和维度拆解数据，撰写简洁专业的分析文本。",
         "",
         "## 规则",
-        "1. 使用工具获取数据，不要编造任何数字",
-        "2. 每个工具返回的所有数字都是真实数据，你只能基于这些数据进行解读",
-        "3. 第一步总是调用 query_metrics 获取汇总数据",
-        "4. 如果需要分析变化原因，再调用 decompose_change",
-        "5. 分析文本中提到的数字必须与工具返回的数据一致",
-        "6. 如果工具返回的数据不足以回答问题，说明缺少什么数据",
-        "7. 分析要简洁专业，控制在 300 字以内",
-        "8. 使用中文输出",
+        "1. 只能使用下面提供的数据，不要编造任何数字",
+        "2. 分析文本中提到的数字必须与提供的数据完全一致",
+        "3. 分析要简洁专业，控制在 300 字以内",
+        "4. 使用中文输出",
+        "5. **强制要求**：分析时必须写出具体的客户名称、机构名称、产品名称，不得用泛指代称",
         "",
+        "## 输出格式要求",
+        "使用以下 markdown 格式输出：",
+        "",
+        "### 📊 总览",
+        "一段总述：总交易量变化额、变化率、主要驱动因素概括。",
+        "",
+        "### 各维度分析",
+        "每个有数据的维度用一个表格：",
+        "",
+        "**机构维度** / **客户维度** / **产品维度**",
+        "| 名称 | 交易量变化 | 贡献度 |",
+        "|------|-----------|-------|",
+        "| xxx  | +xxx     | xx%   |",
+        "",
+        "### 📌 总结",
+        "1. xxx",
+        "2. xxx",
+        "3. xxx",
     ]
 
     if context_prompt:
-        lines.append(context_prompt)
         lines.append("")
+        lines.append(context_prompt)
 
-    lines.extend([
-        "## 输出要求",
-        "输出分析文本即可，不要包含 JSON 或其他格式标记。",
-    ])
+    return "\n".join(lines)
 
+
+def _build_data_prompt(
+    user_query: str,
+    gatekeep_params: dict | None,
+    all_tool_results: list[dict],
+) -> str:
+    """Build a comprehensive user prompt containing all tool data for the LLM."""
+    params = gatekeep_params or {}
+    lines = [f"用户问题：{user_query}"]
+
+    if params.get("date_start"):
+        lines.append(f"时间范围：{params['date_start']} ~ {params['date_end']}")
+
+    # Filter info
+    filter_parts = []
+    if params.get("product_type") and params["product_type"] != "all":
+        filter_parts.append(f"产品类型={params['product_type']}")
+    if params.get("bank_name"):
+        filter_parts.append(f"机构={params['bank_name']}")
+    if params.get("cust_name"):
+        filter_parts.append(f"客户={params['cust_name']}")
+    if filter_parts:
+        lines.append(f"过滤条件：{'，'.join(filter_parts)}")
+
+    comparison = params.get("comparison") or "yoy"
+    comp_label = COMPARISON_LABELS.get(comparison, comparison)
+    lines.append(f"对比方式：{comp_label}")
+    lines.append("")
+
+    # Format tool results
+    for r in all_tool_results:
+        tool = r.get("tool", "")
+        result = r.get("result", {})
+        error = r.get("error")
+
+        if error:
+            lines.append(f"【{tool}】执行出错：{error}\n")
+            continue
+
+        if tool == "query_metrics":
+            summary = result.get("summary", {})
+            total = summary.get("total_trading_volume", 0)
+            prev = summary.get("prev_total_trading_volume", 0)
+            change = summary.get("total_change", 0)
+            change_pct = summary.get("total_change_pct", 0)
+            lines.append("【汇总数据】")
+            lines.append(f"  当前期总交易量：{total:,.2f}")
+            lines.append(f"  上期（{comp_label}）总交易量：{prev:,.2f}")
+            lines.append(f"  变化量：{change:,.2f}（{change_pct:+.2f}%）")
+            lines.append("")
+
+        elif tool == "decompose_change":
+            dim = result.get("by_dimension", "")
+            dim_label = DIMENSION_LABELS.get(dim, dim)
+            drivers = result.get("drivers", [])
+
+            lines.append(f"【按{dim_label}拆解变化（贡献度排序）】")
+            if not drivers:
+                lines.append("  （无拆解数据）")
+            for d in drivers:
+                lines.append(
+                    f"  - {d['dimension_value']}: "
+                    f"当前值={d['current_value']:,.2f}, "
+                    f"上期={d['previous_value']:,.2f}, "
+                    f"变化={d['change_value']:,.2f}（贡献度{d['contrib_pct']:+.2f}%）"
+                )
+            lines.append("")
+
+    lines.append("请严格按照系统提示中的输出格式要求来组织分析文本，使用表格展示各维度数据，并以1、2、3总结结尾。")
     return "\n".join(lines)
 
 
@@ -66,7 +187,7 @@ def run_analysis(
     session_id: str = "",
     gatekeep_params: dict | None = None,
 ) -> dict:
-    """Run the full analysis pipeline.
+    """Run the deterministic analysis pipeline.
 
     Args:
         user_query: The user's natural language query.
@@ -78,148 +199,145 @@ def run_analysis(
     """
     # ---- Build context from memory ----
     context_prompt = ""
+    memory = None
     if session_id:
         memory = AgentMemory()
         context_prompt = memory.build_context_prompt(session_id)
 
-    system_prompt = _build_system_prompt(user_query, context_prompt)
+    params = gatekeep_params or {}
+    date_start = params.get("date_start")
+    date_end = params.get("date_end")
 
-    # ---- Agent loop ----
+    if not date_start or not date_end:
+        return {
+            "summary": "缺少时间范围，无法进行变化原因分析。",
+            "insights": [],
+            "mode": "analyze",
+        }
+
+    # ---- Determine dimensions and execute tools ----
+    dimensions = _determine_analysis_dimensions(params)
+    comparison = params.get("comparison") or "yoy"
+    filters = _build_tool_filters(params)
+
+    all_tool_results: list[dict] = []
+    tool_call_summary: list[dict] = []
+
+    # Step 1: Baseline query with comparison
+    logger.info("Auto-execute: query_metrics (baseline, %s)", comparison)
+    try:
+        baseline = query_metrics(
+            metrics=["trading_volume"],
+            filters=filters,
+            date_start=date_start,
+            date_end=date_end,
+            comparison=comparison,
+        )
+        all_tool_results.append({"tool": "query_metrics", "result": baseline})
+        tool_call_summary.append({
+            "tool": "query_metrics",
+            "params": {"date_start": date_start, "date_end": date_end, "comparison": comparison, "filters": filters},
+            "result_summary": _summarize_tool_result(baseline),
+        })
+        logger.info("Baseline: total=%s, change=%s%%",
+                     baseline.get("summary", {}).get("total_trading_volume"),
+                     baseline.get("summary", {}).get("total_change_pct"))
+    except Exception as exc:
+        logger.exception("Baseline query failed: %s", exc)
+        all_tool_results.append({"tool": "query_metrics", "error": f"{type(exc).__name__}: {exc}"})
+
+    # Step 2: Decompose by each dimension
+    for dim in dimensions:
+        dim_label = DIMENSION_LABELS.get(dim, dim)
+        logger.info("Auto-execute: decompose_change by %s", dim_label)
+        try:
+            decomp = decompose_change(
+                metric="trading_volume",
+                date_start=date_start,
+                date_end=date_end,
+                comparison=comparison,
+                by_dimension=dim,
+                top_n=8,
+                filters=filters,
+            )
+            # Debug: log driver values to verify names
+            for d in decomp.get("drivers", [])[:3]:
+                logger.info("  driver: [%s] value=%.2f contrib=%.2f%%",
+                            d.get("dimension_value", "?"), d.get("current_value", 0), d.get("contrib_pct", 0))
+            all_tool_results.append({"tool": "decompose_change", "result": decomp})
+            tool_call_summary.append({
+                "tool": "decompose_change",
+                "params": {"by_dimension": dim, "date_start": date_start, "date_end": date_end, "comparison": comparison},
+                "result_summary": f"按{dim_label}拆解，{len(decomp.get('drivers', []))}条",
+            })
+            logger.info("Decompose by %s: %d drivers", dim_label, len(decomp.get("drivers", [])))
+        except Exception as exc:
+            logger.exception("Decompose by %s failed: %s", dim_label, exc)
+            all_tool_results.append({"tool": "decompose_change", "error": f"{type(exc).__name__}: {exc}"})
+
+    # ---- Extract structured data for frontend ----
+    analysis_data = _extract_analysis_data(all_tool_results)
+
+    # ---- LLM generates analysis text from data (no tools) ----
+    system_prompt = _build_system_prompt(context_prompt)
+    data_prompt = _build_data_prompt(user_query, params, all_tool_results)
+
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": _build_user_prompt(user_query, gatekeep_params)},
+        {"role": "user", "content": data_prompt},
     ]
 
-    all_tool_results = []
-    tool_call_summary = []
+    logger.info("Calling LLM for analysis text generation")
+    result = llm_tool_call(messages=messages, tools=[], temperature=0.1, max_tokens=2048, timeout=120)
 
-    for round_num in range(MAX_ROUNDS):
-        logger.info("Agent round %d/%d", round_num + 1, MAX_ROUNDS)
+    if result and result["type"] == "text":
+        analysis_text = result["content"]
 
-        result = llm_tool_call(messages=messages, tools=TOOL_DEFINITIONS)
+        # Post-validate
+        validator = PostValidator()
+        mismatches = validator.validate(analysis_text, all_tool_results)
 
-        if result is None:
-            return {
-                "summary": "抱歉，分析服务暂不可用，请稍后重试。",
-                "insights": [],
-                "mode": "analyze",
-                "error": "LLM tool call failed",
-            }
-
-        if result["type"] == "text":
-            # LLM generated final analysis text
-            analysis_text = result["content"]
-
-            # Post-validate
-            validator = PostValidator()
-            mismatches = validator.validate(analysis_text, all_tool_results)
-
-            if mismatches:
-                logger.warning("Post-validation found %d mismatches", len(mismatches))
-                if round_num < MAX_ROUNDS - 1:
-                    # Give LLM one more chance to fix
-                    messages.append({"role": "assistant", "content": analysis_text})
-                    messages.append({
-                        "role": "user",
-                        "content": _build_correction_prompt(mismatches),
-                    })
-                    continue
-
-            # Save to memory
-            if session_id:
-                try:
-                    turn_id = int(datetime.now().timestamp())
-                    memory.save(session_id, turn_id, user_query, {
-                        "reasoning": "tool_calls_completed",
-                        "tool_calls": tool_call_summary,
-                        "key_entities": _extract_entities(gatekeep_params),
-                    })
-                except Exception as exc:
-                    logger.warning("Failed to save agent memory: %s", exc)
-
-            return {
-                "summary": analysis_text,
-                "insights": _build_insights_from_tools(all_tool_results),
-                "mode": "analyze",
-            }
-
-        elif result["type"] == "tool_calls":
-            # Execute tool calls
-            round_results = []
-            for call in result["calls"]:
-                func_name = call["function"]
-                args = call["arguments"]
-
-                # Validate
-                validator = ToolValidator()
-                if func_name == "query_metrics":
-                    validation_errors = validator.validate_query_metrics(args)
-                elif func_name == "decompose_change":
-                    validation_errors = validator.validate_decompose_change(args)
-                else:
-                    validation_errors = [f"未知工具：{func_name}"]
-
-                if validation_errors:
-                    error_msg = "；".join(validation_errors)
-                    round_results.append({
-                        "tool": func_name,
-                        "params": args,
-                        "error": error_msg,
-                    })
-                    logger.warning("Validation failed for %s: %s", func_name, error_msg)
-                    continue
-
-                # Execute
-                try:
-                    fn = _TOOL_MAP.get(func_name)
-                    if fn:
-                        tool_result = fn(**args)
-                        round_results.append({
-                            "tool": func_name,
-                            "params": args,
-                            "result": tool_result,
-                        })
-                        tool_call_summary.append({
-                            "tool": func_name,
-                            "params": args,
-                            "result_summary": _summarize_tool_result(tool_result),
-                        })
-                        logger.info("Tool %s executed successfully", func_name)
-                except Exception as exc:
-                    logger.exception("Tool %s failed: %s", func_name, exc)
-                    round_results.append({
-                        "tool": func_name,
-                        "params": args,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    })
-
-            all_tool_results.extend(round_results)
-
-            # Feed results back to LLM
+        if mismatches:
+            logger.warning("Post-validation found %d mismatches, attempting correction", len(mismatches))
+            messages.append({"role": "assistant", "content": analysis_text})
             messages.append({
-                "role": "assistant",
-                "content": json.dumps({
-                    "tool": "batch_execution",
-                    "results": round_results,
-                }, ensure_ascii=False),
+                "role": "user",
+                "content": _build_correction_prompt(mismatches),
             })
+            retry = llm_tool_call(messages=messages, tools=[], temperature=0.1, max_tokens=2048, timeout=120)
+            if retry and retry["type"] == "text":
+                analysis_text = retry["content"]
+                mismatches = validator.validate(analysis_text, all_tool_results)
+                if mismatches:
+                    logger.warning("Correction still has %d mismatches, using original", len(mismatches))
 
-    # Max rounds reached without text response — fallback
+        # Save to memory
+        if session_id and memory:
+            try:
+                turn_id = int(datetime.now().timestamp())
+                memory.save(session_id, turn_id, user_query, {
+                    "reasoning": "deterministic_analysis",
+                    "tool_calls": tool_call_summary,
+                    "key_entities": _extract_entities(gatekeep_params),
+                })
+            except Exception as exc:
+                logger.warning("Failed to save agent memory: %s", exc)
+
+        return {
+            "summary": analysis_text,
+            "insights": _build_insights_from_tools(all_tool_results),
+            "mode": "analyze",
+            "analysis_data": analysis_data,
+        }
+
+    # LLM failed — template fallback
+    logger.warning("LLM text generation failed, using template fallback")
     return {
         "summary": _generate_fallback_summary(all_tool_results),
         "insights": _build_insights_from_tools(all_tool_results),
         "mode": "analyze",
+        "analysis_data": analysis_data,
     }
-
-
-def _build_user_prompt(user_query: str, gatekeep_params: dict | None = None) -> str:
-    lines = [f"用户问题：{user_query}"]
-    if gatekeep_params:
-        filters = {k: v for k, v in gatekeep_params.items()
-                   if v not in (None, "", False, [])}
-        if filters:
-            lines.append(f"已知过滤条件：{json.dumps(filters, ensure_ascii=False)}")
-    return "\n".join(lines)
 
 
 def _build_correction_prompt(mismatches: list) -> str:
@@ -258,6 +376,45 @@ def _build_insights_from_tools(all_results: list) -> list:
                 "detail": f"总交易量{direction}了{abs(summary.get('total_change', 0)):,.0f}美元（{summary['total_change_pct']:+.2f}%）",
             })
     return insights
+
+
+def _extract_analysis_data(all_tool_results: list[dict]) -> dict:
+    """Extract structured analysis data from tool results for frontend rendering."""
+    analysis = {
+        "baseline": {},
+        "dimensions": [],
+    }
+    for r in all_tool_results:
+        if "result" not in r:
+            continue
+        result = r["result"]
+        if r["tool"] == "query_metrics":
+            summary = result.get("summary", {})
+            analysis["baseline"] = {
+                "total_trading_volume": summary.get("total_trading_volume"),
+                "prev_total_trading_volume": summary.get("prev_total_trading_volume"),
+                "total_change": summary.get("total_change"),
+                "total_change_pct": summary.get("total_change_pct"),
+            }
+        elif r["tool"] == "decompose_change":
+            dim = result.get("by_dimension", "")
+            dim_label = DIMENSION_LABELS.get(dim, dim)
+            drivers = result.get("drivers", [])
+            analysis["dimensions"].append({
+                "dimension": dim,
+                "dim_label": dim_label,
+                "drivers": [
+                    {
+                        "dimension_value": d["dimension_value"],
+                        "current_value": d["current_value"],
+                        "previous_value": d["previous_value"],
+                        "change_value": d["change_value"],
+                        "contrib_pct": d["contrib_pct"],
+                    }
+                    for d in drivers
+                ],
+            })
+    return analysis
 
 
 def _extract_entities(gatekeep_params: dict | None) -> dict:

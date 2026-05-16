@@ -48,21 +48,21 @@ def _render_time(rules: list[dict]) -> str:
 def _render_special_states(rules: list[dict]) -> str:
     lines = []
     for r in rules:
-        lines.append(f"  {r['keywords']} → special_states=\"{r['value']}\" ({r['meaning']})")
+        lines.append(f"  {r['keywords']} → special_states=\"{r['value']}\" ({r.get('meaning', '')})")
     return "\n".join(lines)
 
 
 def _render_app_id(rules: list[dict]) -> str:
     lines = []
     for r in rules:
-        lines.append(f"  {r['keywords']} → appid={r['value']} ({r['meaning']})")
+        lines.append(f"  {r['keywords']} → appid={r['value']} ({r.get('meaning', '')})")
     return "\n".join(lines)
 
 
 def _render_product_type(rules: list[dict]) -> str:
     lines = []
     for r in rules:
-        lines.append(f"  {r['keywords']} → \"{r['value']}\" ({r['meaning']})")
+        lines.append(f"  {r['keywords']} → \"{r['value']}\" ({r.get('meaning', '')})")
     return "\n".join(lines)
 
 

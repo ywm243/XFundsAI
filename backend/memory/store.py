@@ -5,11 +5,37 @@ Supports: session CRUD, turn recording, context retrieval, memory summaries.
 """
 
 import logging
+import math
+from collections import Counter
 from typing import Optional
 
 from db import mysql_store
 
 logger = logging.getLogger(__name__)
+
+
+# ── Char n-gram similarity (pure Python, no deps) ──────────────────────
+# Character 2/3/4-grams handle Chinese text naturally because they capture
+# sub-word patterns without needing a tokenizer like jieba.
+
+
+def _char_ngrams(text: str, n_range: tuple = (2, 4)) -> Counter:
+    """Extract character n-grams as a sparse frequency vector."""
+    ngrams = Counter()
+    for n in range(n_range[0], n_range[1] + 1):
+        for i in range(len(text) - n + 1):
+            ngrams[text[i:i + n]] += 1
+    return ngrams
+
+
+def _cosine_similarity(a: Counter, b: Counter) -> float:
+    """Cosine similarity between two sparse Counter vectors."""
+    dot = sum(a[k] * b[k] for k in a if k in b)
+    norm_a = math.sqrt(sum(v * v for v in a.values()))
+    norm_b = math.sqrt(sum(v * v for v in b.values()))
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 class AgentMemory:
@@ -97,13 +123,15 @@ class AgentMemory:
         )
 
     def find_similar(self, query_text: str, limit: int = 3) -> list[dict]:
-        """Find similar historical queries by keyword overlap.
+        """Find similar historical queries by char n-gram cosine similarity.
 
-        Simple approach: check keyword overlap in recent turns.
-        Can be upgraded to vector similarity later (Phase 3).
+        Pure-Python vector search — no external embedding service needed.
+        Searches the last 200 turns across all sessions of this agent type.
+        Can be upgraded to Chroma vector search later (Phase 3).
         """
-        # For now, use keyword overlap on the query text
-        # Future: replace with Chroma vector search
+        if not query_text or not query_text.strip():
+            return []
+
         conn = mysql_store.get_conn()
         try:
             with conn.cursor() as cur:
@@ -116,13 +144,16 @@ class AgentMemory:
                 """, (self.agent_type,))
                 rows = cur.fetchall()
 
-            query_words = set(query_text)
+            query_vec = _char_ngrams(query_text.strip())
             scored = []
             for row in rows:
-                row_words = set(row["user_query"] or "")
-                overlap = len(query_words & row_words) / max(len(query_words), 1)
-                if overlap > 0.3:
-                    scored.append((overlap, dict(row)))
+                text = (row["user_query"] or "").strip()
+                if not text:
+                    continue
+                row_vec = _char_ngrams(text)
+                sim = _cosine_similarity(query_vec, row_vec)
+                if sim > 0.25:
+                    scored.append((sim, dict(row)))
 
             scored.sort(key=lambda x: x[0], reverse=True)
             return [item for _, item in scored[:limit]]

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { NTabs, NTabPane, NDataTable, NCode } from 'naive-ui'
 import ChartView from './ChartView.vue'
 import InsightPanel from './InsightPanel.vue'
+import AnalysisResult from './AnalysisResult.vue'
 import { COLUMN_LABELS, formatCellValue } from '../constants.js'
 import * as XLSX from 'xlsx'
 
@@ -13,6 +14,41 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['quickQuery'])
+
+// ── Data volume guard ──────────────────────────────────────────────
+const MAX_CHART_ITEMS = 100
+const MAX_TABLE_ROWS = 2000
+const ROW_WARN_THRESHOLD = 500
+
+const isAnalyze = computed(() => props.data.mode === 'analyze')
+
+const isOversized = computed(() => {
+  const n = props.data.row_count ?? props.data.rows?.length ?? 0
+  return n > ROW_WARN_THRESHOLD
+})
+
+const warningMessage = computed(() => {
+  const n = props.data.row_count ?? props.data.rows?.length ?? 0
+  if (n > MAX_TABLE_ROWS) return `数据量过大（共 ${n} 行），表格仅显示前 ${MAX_TABLE_ROWS} 行`
+  if (n > ROW_WARN_THRESHOLD) return `数据量较大（共 ${n} 行）`
+  return ''
+})
+
+const safeChartOption = computed(() => {
+  const opt = props.data.chartOption
+  if (!opt?.series) return null
+  const n = props.data.row_count ?? props.data.rows?.length ?? 0
+  if (n <= MAX_CHART_ITEMS) return opt
+  // Truncate chart data to prevent browser OOM
+  return {
+    ...opt,
+    xAxis: opt.xAxis ? { ...opt.xAxis, data: (opt.xAxis.data || []).slice(0, MAX_CHART_ITEMS) } : opt.xAxis,
+    series: (opt.series || []).map(s => ({
+      ...s,
+      data: (s.data || []).slice(0, MAX_CHART_ITEMS),
+    })),
+  }
+})
 
 function onInsightClick(query) {
   if (query) emit('quickQuery', query)
@@ -30,11 +66,16 @@ const tableColumns = computed(() => {
 
 const tableData = computed(() => {
   if (!props.data.columns || !props.data.rows) return []
-  return props.data.rows.map(row => {
+  const rows = props.data.rows.slice(0, MAX_TABLE_ROWS)
+  return rows.map(row => {
     const obj = {}
     props.data.columns.forEach((col, i) => { obj[col] = row[i] })
     return obj
   })
+})
+
+const tableRowCount = computed(() => {
+  return props.data.row_count ?? props.data.rows?.length ?? 0
 })
 
 const activeTab = ref('data')
@@ -94,8 +135,9 @@ function handleExportPdf() {
 
 <template>
   <div class="result-card">
-    <!-- Section 1: NL Summary -->
-    <div v-if="data.summary" class="result-summary">
+    <!-- Section 1: NL Summary (analyze mode → structured cards; else → plain text) -->
+    <AnalysisResult v-if="isAnalyze && data.summary" :data="data" />
+    <div v-else-if="data.summary" class="result-summary">
       <div class="summary-text">{{ data.summary }}</div>
       <div class="summary-meta">
         <span v-if="data.params?.date_start">🕐 {{ data.params.date_start }} ~ {{ data.params.date_end }}</span>
@@ -105,43 +147,50 @@ function handleExportPdf() {
       </div>
     </div>
 
-    <!-- Section 2: Chart -->
-    <div v-if="data.chartOption?.series" class="result-chart">
-      <div class="section-label">📈 {{ data.chartOption._title || '数据图表' }}</div>
-      <ChartView :option="data.chartOption" />
+    <!-- Section 2: Chart (hide in analyze mode) -->
+    <div v-if="!isAnalyze && safeChartOption?.series" class="result-chart">
+      <div class="section-label">📈 {{ safeChartOption._title || '数据图表' }}</div>
+      <div v-if="isOversized" class="chart-warning">图表仅显示前 {{ MAX_CHART_ITEMS }} 项</div>
+      <ChartView :option="safeChartOption" />
     </div>
 
-    <!-- Section 3: Insights -->
-    <InsightPanel :insights="data.insights || []" @click="onInsightClick" />
+    <!-- Section 3: Insights (hide in analyze mode) -->
+    <InsightPanel v-if="!isAnalyze" :insights="data.insights || []" @click="onInsightClick" />
 
-    <!-- Section 4: Data table -->
-    <NTabs v-model:value="activeTab" type="line" :tabs-padding="0">
-      <NTabPane tab="数据" name="data">
-        <NDataTable
-          :columns="tableColumns"
-          :data="tableData"
-          :max-height="360"
-          :bordered="true"
-          size="small"
-          striped
-        />
-      </NTabPane>
-      <NTabPane v-if="data.sql" tab="SQL" name="sql">
-        <NCode :code="data.sql" language="sql" :word-wrap="true" />
-      </NTabPane>
-      <NTabPane v-if="data.params" tab="参数" name="params">
-        <NCode :code="JSON.stringify(data.params, null, 2)" language="json" :word-wrap="true" />
-      </NTabPane>
-    </NTabs>
+    <!-- Section 4: Data table (hide in analyze mode) -->
+    <template v-if="!isAnalyze">
+      <div v-if="warningMessage" class="data-warning">{{ warningMessage }}</div>
+      <NTabs v-model:value="activeTab" type="line" :tabs-padding="0">
+        <NTabPane tab="数据" name="data">
+          <NDataTable
+            :columns="tableColumns"
+            :data="tableData"
+            :max-height="360"
+            :bordered="true"
+            size="small"
+            striped
+          />
+        </NTabPane>
+        <NTabPane v-if="data.sql" tab="SQL" name="sql">
+          <NCode :code="data.sql" language="sql" :word-wrap="true" />
+        </NTabPane>
+        <NTabPane v-if="data.comparison_sql" tab="对比SQL" name="comparison_sql">
+          <NCode :code="data.comparison_sql" language="sql" :word-wrap="true" />
+        </NTabPane>
+        <NTabPane v-if="data.params" tab="参数" name="params">
+          <NCode :code="JSON.stringify(data.params, null, 2)" language="json" :word-wrap="true" />
+        </NTabPane>
+      </NTabs>
 
-    <!-- Footer -->
-    <div class="result-footer">
-      <span class="footer-row-count">共 {{ data.row_count ?? data.rows?.length ?? 0 }} 行</span>
-      <span class="footer-export">
-        <span class="export-btn" @click="handleExportExcel">📥 Excel</span>
-        <span class="export-btn" @click="handleExportPdf">📄 PDF</span>
-      </span>
-    </div>
+      <!-- Footer -->
+      <div class="result-footer">
+        <span class="footer-row-count">共 {{ tableRowCount }} 行</span>
+        <span class="footer-export">
+          <span class="export-btn" @click="handleExportExcel">📥 Excel</span>
+          <span class="export-btn" @click="handleExportPdf">📄 PDF</span>
+        </span>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -186,4 +235,16 @@ function handleExportPdf() {
 .footer-export { display:flex; gap:12px; }
 .export-btn { cursor: pointer; }
 .export-btn:hover { color: var(--text-secondary); }
+.data-warning, .chart-warning {
+  padding: 6px 16px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  border-bottom: 1px solid #fde68a;
+}
+.chart-warning {
+  padding: 4px 0 8px;
+  background: transparent;
+  border: none;
+}
 </style>

@@ -247,6 +247,7 @@ function resetEditingItem() {
   editingItem.is_ironclad = false
   editingItem.is_active = true
   editingItem.app_id_value = null
+  editingItem.app_id_meaning = ''
   editingItem.direction = ''
   editingItem.product_types = []
   editingItem.customer_direction = ''
@@ -261,6 +262,17 @@ function resetEditingItem() {
   editingItem.comparison_type = ''
   editingItem.cmp_example = ''
   editingItem.cmp_note = ''
+  // dimension_labels
+  editingItem.editing_dim_key = ''
+  editingItem.display_label = ''
+  editingItem.count_unit = ''
+  editingItem.sql_select_col = ''
+  editingItem.sql_group_col = ''
+  editingItem.join_clause = ''
+  editingItem.label_col_names_str = ''
+  editingItem.amount_col_names_str = ''
+  editingItem.yoy_label = ''
+  editingItem.mom_label = ''
   editErrors.value = []
 }
 
@@ -289,6 +301,7 @@ function openEdit(item) {
 
   if (cat === 'app_id') {
     editingItem.app_id_value = rd.value || null
+    editingItem.app_id_meaning = rd.meaning || ''
   } else if (cat === 'buy_sell_direction') {
     editingItem.direction = rd.direction || ''
     editingItem.product_types = rd.product_types || []
@@ -311,6 +324,17 @@ function openEdit(item) {
     editingItem.compute_start = rd.compute_start || ''
     editingItem.compute_end = rd.compute_end || ''
     editingItem.example = rd.example || ''
+  } else if (cat === 'dimension_labels') {
+    editingItem.editing_dim_key = kws[0] || ''
+    editingItem.display_label = rd.display_label || ''
+    editingItem.count_unit = rd.count_unit || ''
+    editingItem.sql_select_col = rd.sql_select_col || ''
+    editingItem.sql_group_col = rd.sql_group_col || ''
+    editingItem.join_clause = rd.join_clause || ''
+    editingItem.label_col_names_str = (rd.label_col_names || []).join(', ')
+    editingItem.amount_col_names_str = (rd.amount_col_names || []).join(', ')
+    editingItem.yoy_label = (rd.comparison_labels || {}).yoy || ''
+    editingItem.mom_label = (rd.comparison_labels || {}).mom || ''
   }
 
   showEditModal.value = true
@@ -344,6 +368,10 @@ function validateItem() {
   if (cat === 'time_expressions' && !editingItem.pattern) {
     errors.push('表达式模式不能为空')
   }
+  if (cat === 'dimension_labels' && editingItem.keywords_str.trim() !== '_meta') {
+    if (!editingItem.display_label) errors.push('显示标签不能为空')
+    if (!editingItem.sql_select_col) errors.push('SQL选择列不能为空')
+  }
   if (editingItem.is_ironclad && !editingItem.description) {
     errors.push('铁律规则必须填写说明')
   }
@@ -361,6 +389,7 @@ function buildRuleData() {
   switch (cat) {
     case 'app_id':
       rd.value = editingItem.app_id_value
+      if (editingItem.app_id_meaning) rd.meaning = editingItem.app_id_meaning
       break
     case 'buy_sell_direction':
       rd.direction = editingItem.direction
@@ -392,6 +421,22 @@ function buildRuleData() {
       rd.compute_start = editingItem.compute_start
       rd.compute_end = editingItem.compute_end
       rd.example = editingItem.example
+      break
+    case 'dimension_labels':
+      if (editingItem.keywords_str.trim() === '_meta') {
+        rd.amount_col_names = editingItem.amount_col_names_str.split(',').map(s => s.trim()).filter(Boolean)
+        rd.comparison_labels = {
+          yoy: editingItem.yoy_label || '同比',
+          mom: editingItem.mom_label || '环比',
+        }
+      } else {
+        rd.display_label = editingItem.display_label
+        rd.count_unit = editingItem.count_unit
+        rd.sql_select_col = editingItem.sql_select_col
+        rd.sql_group_col = editingItem.sql_group_col
+        rd.join_clause = editingItem.join_clause
+        rd.label_col_names = editingItem.label_col_names_str.split(',').map(s => s.trim()).filter(Boolean)
+      }
       break
   }
   rd.description = editingItem.description
@@ -888,6 +933,55 @@ const showCustomerDirection = computed(() => {
                 {{ parseRuleData(item.rule_data).description }}
               </div>
             </template>
+
+            <!-- === dimension_labels === -->
+            <template v-else-if="currentCategory() === 'dimension_labels'">
+              <div>
+                <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px;">
+                  <NTag size="small" type="info" :bordered="false">
+                    {{ parseKeywords(item.keywords)[0] }}
+                  </NTag>
+                  <template v-if="parseKeywords(item.keywords)[0] === '_meta'">
+                    <NText depth="3" style="font-size:11px;">全局配置 — 金额字段: </NText>
+                    <NTag v-for="col in (parseRuleData(item.rule_data).amount_col_names || [])" :key="col" size="tiny" type="success" :bordered="false">{{ col }}</NTag>
+                    <NText depth="3" style="font-size:11px;"> 对比标签: </NText>
+                    <NText style="font-size:11px;">{{ (parseRuleData(item.rule_data).comparison_labels || {}).yoy }} / {{ (parseRuleData(item.rule_data).comparison_labels || {}).mom }}</NText>
+                  </template>
+                  <template v-else>
+                    <NText style="font-size:12px; font-weight:500;">{{ parseRuleData(item.rule_data).display_label }}</NText>
+                    <NTag size="tiny" type="warning" :bordered="false">单位: {{ parseRuleData(item.rule_data).count_unit }}</NTag>
+                    <NText depth="3" style="font-size:11px;">SQL: {{ parseRuleData(item.rule_data).sql_select_col }}</NText>
+                  </template>
+                  <span style="flex:1;"></span>
+                  <NTag :type="item.is_active !== false ? 'success' : 'default'" size="tiny">
+                    {{ item.is_active !== false ? '启用' : '禁用' }}
+                  </NTag>
+                  <NButton size="tiny" @click="openEdit(item)">编辑</NButton>
+                  <NButton size="tiny" @click="toggleActive(item)">
+                    {{ item.is_active !== false ? '禁用' : '启用' }}
+                  </NButton>
+                  <NPopconfirm @positive-click="() => deleteItem(item)">
+                    <template #trigger>
+                      <NButton size="tiny" type="error">删除</NButton>
+                    </template>
+                    确定删除此规则？
+                  </NPopconfirm>
+                </div>
+                <details v-if="parseKeywords(item.keywords)[0] !== '_meta'" style="margin-top:6px; font-size:11px;">
+                  <summary style="cursor:pointer; color: var(--text-muted);">详细SQL配置</summary>
+                  <div style="margin-top:4px; padding:6px; background: rgba(0,0,0,0.03); border-radius:4px;">
+                    <div><NText depth="3">分组列: </NText><code>{{ parseRuleData(item.rule_data).sql_group_col }}</code></div>
+                    <div v-if="parseRuleData(item.rule_data).join_clause" style="margin-top:2px;">
+                      <NText depth="3">JOIN: </NText><code style="font-size:10px;">{{ parseRuleData(item.rule_data).join_clause }}</code>
+                    </div>
+                    <div v-if="(parseRuleData(item.rule_data).label_col_names || []).length > 0" style="margin-top:2px;">
+                      <NText depth="3">标签列: </NText>
+                      <NTag v-for="col in parseRuleData(item.rule_data).label_col_names" :key="col" size="tiny" :bordered="false">{{ col }}</NTag>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </template>
           </NCard>
 
           <!-- Empty state -->
@@ -964,6 +1058,11 @@ const showCustomerDirection = computed(() => {
                 placeholder="选择产品ID"
                 style="margin-top:4px;"
               />
+            </div>
+            <div>
+              <NText strong style="font-size:12px;">说明</NText>
+              <NInput v-model:value="editingItem.app_id_meaning" placeholder="如：外汇业务系统" style="margin-top:4px;" />
+              <NText depth="3" style="font-size:10px;">用于日志显示的业务系统名称</NText>
             </div>
           </template>
 
@@ -1083,6 +1182,64 @@ const showCustomerDirection = computed(() => {
               <NText strong style="font-size:12px;">示例</NText>
               <NInput v-model:value="editingItem.example" placeholder="如：今年1月上旬 → [1月1日, 1月10日]" style="margin-top:4px;" />
             </div>
+          </template>
+
+          <!-- === dimension_labels fields === -->
+          <template v-if="currentCategory() === 'dimension_labels'">
+            <template v-if="editingItem.keywords_str.trim() === '_meta'">
+              <!-- _meta: global config -->
+              <div>
+                <NText strong style="font-size:12px;">金额字段名</NText>
+                <NInput v-model:value="editingItem.amount_col_names_str" placeholder="用逗号分隔，如：USDAMOUNT, TOTAL_AMOUNT" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">用于识别数值列的字段名列表</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">同比标签</NText>
+                <NInput v-model:value="editingItem.yoy_label" placeholder="同比" style="margin-top:4px;" />
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">环比标签</NText>
+                <NInput v-model:value="editingItem.mom_label" placeholder="环比" style="margin-top:4px;" />
+              </div>
+            </template>
+            <template v-else>
+              <!-- Regular dimension -->
+              <div>
+                <NText strong style="font-size:12px;">维度标识</NText>
+                <NInput v-model:value="editingItem.keywords_str" disabled style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">维度唯一标识（不可修改）</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">显示标签 <NText type="error" style="font-size:10px;">*必填</NText></NText>
+                <NInput v-model:value="editingItem.display_label" placeholder="如：机构、客户、客户经理" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">查询摘要中显示的名称</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">计数单位</NText>
+                <NInput v-model:value="editingItem.count_unit" placeholder="如：家、个、位" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">显示"共N{单位}"时的单位</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">SQL选择列 <NText type="error" style="font-size:10px;">*必填</NText></NText>
+                <NInput v-model:value="editingItem.sql_select_col" placeholder="如：b.DIPNAME as 机构名称" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">GROUP BY 查询中的 SELECT 片段</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">SQL分组列</NText>
+                <NInput v-model:value="editingItem.sql_group_col" placeholder="如：b.DIPNAME" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">GROUP BY 子句使用的列名</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">JOIN子句</NText>
+                <NInput v-model:value="editingItem.join_clause" placeholder="如：LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID" type="textarea" :rows="2" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">如需关联其他表时使用的 JOIN 语句，不需要则留空</NText>
+              </div>
+              <div>
+                <NText strong style="font-size:12px;">标签列名</NText>
+                <NInput v-model:value="editingItem.label_col_names_str" placeholder="用逗号分隔，如：DIPNAME, BANKNAME" style="margin-top:4px;" />
+                <NText depth="3" style="font-size:10px;">用于识别文本标签的列名列表</NText>
+              </div>
+            </template>
           </template>
 
           <!-- ====== Common fields (end of form) ====== -->

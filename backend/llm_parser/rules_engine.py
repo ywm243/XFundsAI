@@ -7,6 +7,84 @@ logger = logging.getLogger(__name__)
 
 _rules_cache: dict | None = None
 
+# ---- Dimension config defaults (fallback when DB unavailable) ----
+
+_DEFAULT_DIMENSION_CONFIG: dict = {
+    "bank": {
+        "display_label": "机构", "count_unit": "家",
+        "sql_select_col": "b.DIPNAME as 机构名称", "sql_group_col": "b.DIPNAME",
+        "join_clause": "LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID",
+        "label_col_names": ["DIPNAME", "BANKNAME"],
+    },
+    "customer": {
+        "display_label": "客户", "count_unit": "个",
+        "sql_select_col": "t.CUSTNAME as 客户名称", "sql_group_col": "t.CUSTNAME",
+        "join_clause": "", "label_col_names": ["CUSTNAME"],
+    },
+    "customer_id": {
+        "display_label": "客户", "count_unit": "个",
+        "sql_select_col": "t.CUSTOMERID as 客户号", "sql_group_col": "t.CUSTOMERID",
+        "join_clause": "", "label_col_names": ["CUSTOMERID"],
+    },
+    "manager": {
+        "display_label": "客户经理", "count_unit": "位",
+        "sql_select_col": "t.CUSTMAINMANAGER as 客户经理ID", "sql_group_col": "t.CUSTMAINMANAGER",
+        "join_clause": "", "label_col_names": ["CUSTMAINMANAGER"],
+    },
+    "manager_name": {
+        "display_label": "客户经理", "count_unit": "位",
+        "sql_select_col": "t.CUSTMANAGERNAME as 客户经理名称", "sql_group_col": "t.CUSTMANAGERNAME",
+        "join_clause": "", "label_col_names": ["CUSTMANAGERNAME"],
+    },
+}
+_DEFAULT_COMPARISON_LABELS = {"yoy": "同比", "mom": "环比"}
+_DEFAULT_AMOUNT_COL_NAMES = {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"}
+_DEFAULT_LABEL_COL_NAMES = {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"}
+
+_dimension_config_cache: dict | None = None
+
+
+def _get_default_dimension_config() -> dict:
+    """Return the full default dimension config dict (same shape as DB loader)."""
+    all_label_cols = set(_DEFAULT_LABEL_COL_NAMES)
+    return {
+        "dimensions": dict(_DEFAULT_DIMENSION_CONFIG),
+        "comparison_labels": dict(_DEFAULT_COMPARISON_LABELS),
+        "amount_col_names": set(_DEFAULT_AMOUNT_COL_NAMES),
+        "label_col_names": all_label_cols,
+    }
+
+
+def load_dimension_config() -> dict:
+    """Load dimension configuration from DB rules (with memory cache).
+
+    Falls back to hardcoded defaults if DB is unavailable or not yet seeded.
+    """
+    global _dimension_config_cache
+    if _dimension_config_cache is not None:
+        return _dimension_config_cache
+
+    try:
+        result = mysql_store.load_dimension_labels_from_db()
+        if result and result.get("dimensions"):
+            _dimension_config_cache = result
+            logger.info("Loaded dimension config from DB (%d dimensions)", len(result["dimensions"]))
+            return result
+    except Exception:
+        logger.warning("Could not load dimension labels from DB, using defaults")
+
+    _dimension_config_cache = _get_default_dimension_config()
+    return _dimension_config_cache
+
+
+def reload_rules() -> None:
+    """Clear cache so next request reloads from MySQL."""
+    global _rules_cache, _dimension_config_cache
+    _rules_cache = None
+    _dimension_config_cache = None
+    mysql_store.init_db()
+    logger.info("Rules engine cache cleared, will reload from MySQL on next request")
+
 
 def _load_rules() -> dict:
     """Load rules from MySQL (with memory cache).
@@ -37,6 +115,11 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
     rules = _load_rules()
     overrides: list[str] = []
 
+    # ---- Collect ALL matching app_ids (additive, not override) ----
+    appid_set: set[int] = set()
+    if parsed.get("appid") is not None:
+        appid_set.add(parsed["appid"])
+
     # ---- 阶段 1a: 铁律 buy_sell 规则 ----
     buy_sell_rules = rules["buy_sell_direction"]["rules"]
     for rule in buy_sell_rules:
@@ -44,7 +127,7 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
             if _has_keyword(original_text, rule["keywords"]):
                 parsed["buy_sell"] = rule["direction"]
                 if rule.get("set_app_id"):
-                    parsed["appid"] = rule["set_app_id"]
+                    appid_set.add(rule["set_app_id"])
                 overrides.append(
                     f"buy_sell={rule['direction']},appid={rule.get('set_app_id')} ({rule['description']})"
                 )
@@ -52,7 +135,7 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
 
     # ---- 阶段 1b: "结售汇" 特例 ----
     if "结售汇" in original_text:
-        parsed["appid"] = 2
+        appid_set.add(2)
         parsed["buy_sell"] = ""
 
     # ---- 阶段 1c: 可反转规则 + 客户前缀检测 ----
@@ -102,14 +185,21 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
     elif len(matched_types) == 1:
         parsed["product_type"] = matched_types[0]
 
-    # ---- 阶段 1f: app_id 匹配（仅在未设置时） ----
-    if parsed.get("appid") is None or parsed.get("appid") == "":
-        appid_rules = rules["app_id"]["rules"]
-        for ar in appid_rules:
-            if _has_keyword(original_text, ar["keywords"]):
-                parsed["appid"] = ar["value"]
-                overrides.append(f"appid={ar['value']} ({ar['meaning']})")
-                break
+    # ---- 阶段 1f: app_id 匹配（收集所有匹配项） ----
+    appid_rules = rules["app_id"]["rules"]
+    for ar in appid_rules:
+        if _has_keyword(original_text, ar["keywords"]):
+            appid_set.add(ar["value"])
+            overrides.append(f"appid={ar['value']} ({ar.get('meaning', '')})")
+
+    # ---- 汇总 appid ----
+    if appid_set:
+        ids = sorted(appid_set)
+        parsed["appid"] = ids if len(ids) > 1 else ids[0]
+        if len(ids) > 1:
+            overrides.append(f"multi_appid={ids}")
+    else:
+        parsed["appid"] = None
 
     # ---- 阶段 2: 时间回退 ----
     if not parsed.get("date_start") or not parsed.get("date_end"):

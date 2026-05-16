@@ -71,6 +71,19 @@ def _convert_rows_to_dicts(cols: list, rows: list) -> list[dict]:
     return [dict(zip(cols, row)) for row in rows]
 
 
+def _dim_data_key(dim_name: str) -> str:
+    """Get the SQL column alias from dimension config for data dict lookup.
+
+    The SQL uses 'select_col as 别名', and Oracle returns the alias as column name.
+    But the dimension 'label' may differ from the alias — use the actual alias instead.
+    """
+    dim = DIMENSIONS.get(dim_name, {})
+    select_col = dim.get("select_col", "")
+    if " as " in select_col:
+        return select_col.split(" as ")[-1].strip()
+    return dim.get("label", "机构名称")
+
+
 # ---- Public tools ----
 
 
@@ -209,7 +222,7 @@ def query_metrics(
             cols, rows = _execute_sql(sql)
             data = _convert_rows_to_dicts(cols, rows)
 
-            total_amount = sum(float(r[0]) for r in rows if r and r[0] is not None) if rows else 0
+            total_amount = sum(float(d.get("TOTAL_AMOUNT", 0) or 0) for d in data) if data else 0
             summary = {"total_trading_volume": total_amount}
 
         elif is_hedge_ratio:
@@ -244,8 +257,10 @@ def query_metrics(
             )
             cols, rows = _execute_sql(sql)
             data = _convert_rows_to_dicts(cols, rows)
+            logger.info("query_metrics ranking path: cols=%s, sample_row=%s",
+                        cols, rows[0] if rows else "empty")
             total_amount = sum(
-                float(r[0]) for r in rows if r and r[0] is not None
+                float(d.get("TOTAL_AMOUNT", 0) or 0) for d in data
             )
             summary = {"total_trading_volume": total_amount}
 
@@ -293,11 +308,11 @@ def query_metrics(
             if dimensions:
                 prev_map = {}
                 if cmp_result.get("data"):
-                    dim_key = DIMENSIONS.get(dimensions[0], {}).get("label", "机构名称")
+                    dim_key = _dim_data_key(dimensions[0])
                     for row in cmp_result["data"]:
                         prev_map[row.get(dim_key, "")] = row
 
-                dim_key = DIMENSIONS.get(dimensions[0], {}).get("label", "机构名称")
+                dim_key = _dim_data_key(dimensions[0])
                 for row in data:
                     key = row.get(dim_key, "")
                     prev_row = prev_map.get(key, {})
@@ -380,7 +395,7 @@ def decompose_change(
 
     # Build per-driver map
     prev_map = {}
-    dim_label = DIMENSIONS.get(by_dimension, {}).get("label", "机构名称")
+    dim_label = _dim_data_key(by_dimension)
     for row in previous.get("data", []):
         key = row.get(dim_label, "")
         prev_map[key] = row

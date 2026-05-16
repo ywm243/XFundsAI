@@ -23,7 +23,8 @@ def _compute(rows: list, compare_rows: list, comparison: str,
     change_amount = current_amt - compare_amt
     change_rate = round(abs(change_amount / compare_amt) * 100, 2) if compare_amt != 0 else None
 
-    label_map = {"yoy": "同比", "mom": "环比"}
+    from llm_parser.rules_engine import load_dimension_config
+    label_map = load_dimension_config().get("comparison_labels", {"yoy": "同比", "mom": "环比"})
     return {
         "type": comparison,
         "label": label_map.get(comparison, comparison),
