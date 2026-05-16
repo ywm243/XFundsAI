@@ -104,8 +104,12 @@ def llm_parse(text: str, system_prompt: str) -> dict | None:
         return None
 
 
-def llm_chat(system_prompt: str, user_prompt: str) -> str | None:
-    """Call LLM for free-text chat (analysis, explanation, etc.), returns text response."""
+def llm_chat(system_prompt: str, user_prompt: str, timeout: int = 120) -> str | None:
+    """Call LLM for free-text chat (analysis, explanation, etc.), returns text response.
+
+    Args:
+        timeout: Request timeout in seconds. Use shorter values (15-30) for simple tasks.
+    """
     api_key = os.environ.get("LLM_API_KEY", "")
     base_url = os.environ.get("LLM_BASE_URL", "")
     model = os.environ.get("LLM_MODEL", "")
@@ -124,10 +128,79 @@ def llm_chat(system_prompt: str, user_prompt: str) -> str | None:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            timeout=120,
+            timeout=timeout,
         )
         content = response.choices[0].message.content
         return content or None
     except Exception as exc:
         logger.warning("LLM chat call failed: %s", exc)
+        return None
+
+
+def llm_tool_call(
+    messages: list[dict],
+    tools: list[dict],
+    temperature: float = 0.1,
+    max_tokens: int = 4096,
+    timeout: int = 60,
+) -> dict | None:
+    """Call LLM with tool calling support.
+
+    Args:
+        messages: Conversation messages (system + user/assistant).
+        tools: OpenAI-compatible tool definitions.
+        temperature: Sampling temperature (default 0.1 for precision).
+        max_tokens: Max output tokens.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        dict with either:
+          - {"type": "tool_calls", "calls": [...]}  — LLM wants to call tools
+          - {"type": "text", "content": "..."}       — LLM final response
+          - None on failure
+    """
+    api_key = os.environ.get("LLM_API_KEY", "")
+    base_url = os.environ.get("LLM_BASE_URL", "")
+    model = os.environ.get("LLM_MODEL", "")
+
+    if not api_key or not base_url or not model:
+        logger.warning("LLM not configured for tool calling")
+        return None
+
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=temperature,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        choice = response.choices[0]
+        msg = choice.message
+
+        if msg.tool_calls:
+            calls = []
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                calls.append({
+                    "id": tc.id,
+                    "function": tc.function.name,
+                    "arguments": args,
+                })
+            return {"type": "tool_calls", "calls": calls}
+
+        if msg.content:
+            return {"type": "text", "content": msg.content}
+
+        return None
+
+    except Exception as exc:
+        logger.warning("LLM tool call failed: %s", exc)
         return None
