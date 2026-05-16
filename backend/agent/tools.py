@@ -1,0 +1,333 @@
+"""Analysis tools — query_metrics and decompose_change.
+
+Both tools reuse TradeQueryBuilder for SQL generation and Oracle execution.
+All return values are real data from database, never LLM-generated.
+"""
+
+import logging
+from datetime import datetime
+
+from db.query_builder import TradeQueryBuilder
+from db.connection import get_db
+from llm_parser.parser import compute_comparison_dates
+
+logger = logging.getLogger(__name__)
+
+# Known metrics registry
+METRICS = {
+    "trading_volume": {
+        "label": "交易量",
+        "sql_agg": "SUM(t.USDAMOUNT)",
+    },
+    "hedge_ratio": {
+        "label": "套保率",
+        "sql_agg": None,  # special handling
+    },
+}
+
+# Known dimensions registry
+DIMENSIONS = {
+    "product_type": {"label": "产品类型", "group_col": "t.PT", "select_col": "t.PT as 产品类型"},
+    "bank": {"label": "机构", "group_col": "b.DIPNAME", "select_col": "b.DIPNAME as 机构名称"},
+    "manager_name": {"label": "客户经理", "group_col": "t.CUSTMANAGERNAME", "select_col": "t.CUSTMANAGERNAME as 客户经理名称"},
+    "customer": {"label": "客户", "group_col": "t.CUSTNAME", "select_col": "t.CUSTNAME as 客户名称"},
+    "month": {"label": "月份", "group_col": "TO_CHAR(t.TRADEDATE, 'YYYY-MM')", "select_col": "TO_CHAR(t.TRADEDATE, 'YYYY-MM') as 月份"},
+}
+
+
+def _execute_sql(sql: str) -> tuple[list, list]:
+    """Execute SQL against Oracle and return (columns, rows)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [desc[0] for desc in cur.description] if cur.description else []
+            rows = [list(row) for row in cur.fetchmany(10000)]
+    return cols, rows
+
+
+def _build_filters(filters: dict | None) -> dict:
+    """Convert generic filters dict to TradeQueryBuilder-compatible params."""
+    f = filters or {}
+    params = {}
+    if f.get("product_type"):
+        params["product_type"] = f["product_type"]
+    if f.get("bank_name"):
+        params["bank_name"] = f["bank_name"]
+    if f.get("cust_name"):
+        params["cust_name"] = f["cust_name"]
+    if f.get("buy_sell"):
+        params["buy_sell"] = f["buy_sell"]
+    if f.get("special_states"):
+        raw = f["special_states"]
+        if isinstance(raw, str):
+            params["special_states"] = raw
+    if f.get("appid"):
+        params["appid"] = f["appid"]
+    return params
+
+
+def _convert_rows_to_dicts(cols: list, rows: list) -> list[dict]:
+    """Convert (cols, rows) to list of dicts."""
+    return [dict(zip(cols, row)) for row in rows]
+
+
+# ---- Public tools ----
+
+
+def query_metrics(
+    metrics: list[str],
+    dimensions: list[str] | None = None,
+    filters: dict | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
+    comparison: str = "",
+    top_n: int = 0,
+) -> dict:
+    """Generic metric query tool.
+
+    Args:
+        metrics: List of metric names (e.g. ["trading_volume"]).
+        dimensions: Optional list of dimension names for grouping.
+        filters: Optional dict of filter conditions.
+        date_start: Start date YYYY-MM-DD.
+        date_end: End date YYYY-MM-DD.
+        comparison: "yoy", "mom", or "".
+        top_n: Limit rows (0 = no limit).
+
+    Returns:
+        dict with keys: metrics, dimensions, date_range, comparison, data, summary
+    """
+    f = _build_filters(filters)
+    f.setdefault("product_type", "all")
+
+    # Determine if we need hedge_ratio special handling
+    is_hedge_ratio = "hedge_ratio" in metrics
+
+    # ---- Execute SQL ----
+    if is_hedge_ratio and not dimensions:
+        # Hedge ratio aggregate query
+        sql = TradeQueryBuilder.build_hedge_ratio_query(
+            dimension="bank",
+            date_start=date_start or None,
+            date_end=date_end or None,
+            appid=f.get("appid"),
+            bank_name=f.get("bank_name"),
+            cust_name=f.get("cust_name"),
+        )
+        cols, rows = _execute_sql(sql)
+        data_rows = _convert_rows_to_dicts(cols, rows)
+
+        total_hedge_ratio = 0
+        total_derivative = 0
+        total_amount = 0
+        for r in rows:
+            try:
+                total_derivative += float(r[2] or 0)  # DERIVATIVE_AMOUNT
+                total_amount += float(r[4] or 0)      # TOTAL_AMOUNT
+            except (ValueError, IndexError):
+                pass
+        summary = {
+            "total_hedge_ratio": round(total_derivative / total_amount * 100, 2) if total_amount else 0,
+            "total_derivative_amount": total_derivative,
+            "total_amount": total_amount,
+        }
+        data = data_rows
+
+    elif dimensions:
+        # Grouped query
+        dim = dimensions[0]
+        dim_info = DIMENSIONS.get(dim, DIMENSIONS["bank"])
+
+        if is_hedge_ratio:
+            sql = TradeQueryBuilder.build_hedge_ratio_query(
+                dimension=dim,
+                date_start=date_start or None,
+                date_end=date_end or None,
+                appid=f.get("appid"),
+                bank_name=f.get("bank_name"),
+                cust_name=f.get("cust_name"),
+            )
+        else:
+            sql = TradeQueryBuilder.build_ranking_query(
+                dimension=dim,
+                top_n=top_n or 100,
+                date_start=date_start or None,
+                date_end=date_end or None,
+                appid=f.get("appid"),
+                bank_name=f.get("bank_name"),
+                cust_name=f.get("cust_name"),
+            )
+
+        cols, rows = _execute_sql(sql)
+        data = _convert_rows_to_dicts(cols, rows)
+
+        # Total summary
+        total_amount = sum(
+            float(r[0]) for r in rows if r and r[0] is not None
+        ) if not is_hedge_ratio else 0
+        summary = {"total_trading_volume": total_amount} if not is_hedge_ratio else {}
+
+    else:
+        # Aggregate (single total) query
+        sql = TradeQueryBuilder.build_aggregate_query(
+            date_start=date_start or None,
+            date_end=date_end or None,
+            appid=f.get("appid"),
+            bank_name=f.get("bank_name"),
+            cust_name=f.get("cust_name"),
+        )
+        cols, rows = _execute_sql(sql)
+        data = _convert_rows_to_dicts(cols, rows)
+        total_amount = float(rows[0][0]) if rows and rows[0][0] is not None else 0
+        total_count = int(rows[0][1]) if rows and len(rows[0]) > 1 and rows[0][1] is not None else 0
+        summary = {"total_trading_volume": total_amount, "total_count": total_count}
+
+    # ---- Comparison ----
+    if comparison and date_start and date_end:
+        cmp_start, cmp_end = compute_comparison_dates(date_start, date_end, comparison)
+        if cmp_start and cmp_end:
+            cmp_result = query_metrics(
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                date_start=cmp_start,
+                date_end=cmp_end,
+                comparison="",
+                top_n=top_n,
+            )
+            # Merge comparison data
+            prev_total = cmp_result.get("summary", {}).get("total_trading_volume", 0)
+            current_total = summary.get("total_trading_volume", 0)
+            change = current_total - prev_total
+            change_pct = round((change / prev_total) * 100, 2) if prev_total else 0
+            summary["prev_total_trading_volume"] = prev_total
+            summary["total_change"] = change
+            summary["total_change_pct"] = change_pct
+
+            # Per-row comparison
+            prev_map = {}
+            if dimensions and cmp_result.get("data"):
+                dim_key = DIMENSIONS.get(dimensions[0], {}).get("label", "机构名称")
+                for row in cmp_result["data"]:
+                    prev_map[row.get(dim_key, "")] = row
+
+            for row in data:
+                key = row.get(dimensions[0] if dimensions else "机构名称", "")
+                prev_row = prev_map.get(key, {})
+                prev_val = 0
+                if is_hedge_ratio:
+                    prev_val = prev_row.get("HEDGE_RATIO", 0)
+                else:
+                    prev_val = prev_row.get("TOTAL_AMOUNT", 0) or 0
+                try:
+                    prev_val = float(prev_val)
+                except (ValueError, TypeError):
+                    prev_val = 0
+
+                current_val = 0
+                if is_hedge_ratio:
+                    current_val = float(row.get("HEDGE_RATIO", 0) or 0)
+                else:
+                    current_val = float(row.get("TOTAL_AMOUNT", 0) or 0)
+
+                row["prev_value"] = prev_val
+                row["change_value"] = current_val - prev_val
+                row["change_pct"] = round((current_val - prev_val) / prev_val * 100, 2) if prev_val else None
+
+    return {
+        "metrics": metrics,
+        "dimensions": dimensions or [],
+        "date_range": [date_start or "", date_end or ""],
+        "comparison": comparison,
+        "data": data,
+        "summary": summary,
+    }
+
+
+def decompose_change(
+    metric: str,
+    date_start: str,
+    date_end: str,
+    comparison: str,
+    by_dimension: str,
+    top_n: int = 5,
+    filters: dict | None = None,
+) -> dict:
+    """Change attribution analysis.
+
+    Decomposes total change into per-dimension-member contributions.
+
+    Returns:
+        dict with drivers array, each item has contrib_pct calculated by API.
+    """
+    if comparison not in ("yoy", "mom"):
+        raise ValueError(f"comparison must be 'yoy' or 'mom', got '{comparison}'")
+
+    cmp_start, cmp_end = compute_comparison_dates(date_start, date_end, comparison)
+
+    # Current period data
+    current = query_metrics(
+        metrics=[metric],
+        dimensions=[by_dimension],
+        filters=filters,
+        date_start=date_start,
+        date_end=date_end,
+        top_n=top_n,
+    )
+
+    # Previous period data
+    previous = query_metrics(
+        metrics=[metric],
+        dimensions=[by_dimension],
+        filters=filters,
+        date_start=cmp_start,
+        date_end=cmp_end,
+        top_n=top_n,
+    )
+
+    # Build change drivers
+    total_current = current.get("summary", {}).get("total_trading_volume", 0)
+    total_previous = previous.get("summary", {}).get("total_trading_volume", 0)
+    total_change = total_current - total_previous
+    total_change_pct = round((total_change / total_previous) * 100, 2) if total_previous else 0
+
+    # Build per-driver map
+    prev_map = {}
+    dim_label = DIMENSIONS.get(by_dimension, {}).get("label", "机构名称")
+    for row in previous.get("data", []):
+        key = row.get(dim_label, "")
+        prev_map[key] = row
+
+    drivers = []
+    for row in current.get("data", []):
+        key = row.get(dim_label, "")
+        previous_row = prev_map.get(key, {})
+        current_value = float(row.get("TOTAL_AMOUNT", 0) or 0)
+        previous_value = float(previous_row.get("TOTAL_AMOUNT", 0) or 0) if previous_row else 0
+        change_value = current_value - previous_value
+        contrib_pct = round((change_value / total_change) * 100, 2) if total_change else 0
+
+        drivers.append({
+            "dimension_value": key,
+            "current_value": current_value,
+            "previous_value": previous_value,
+            "change_value": change_value,
+            "contrib_pct": contrib_pct,
+        })
+
+    # Sort by absolute contribution descending, limit top_n
+    drivers.sort(key=lambda x: abs(x["contrib_pct"]), reverse=True)
+    drivers = drivers[:top_n]
+
+    return {
+        "metric": metric,
+        "date_range": [date_start, date_end],
+        "comparison": comparison,
+        "comparison_date_range": [cmp_start or "", cmp_end or ""],
+        "by_dimension": by_dimension,
+        "total_current": total_current,
+        "total_previous": total_previous,
+        "total_change": total_change,
+        "total_change_pct": total_change_pct,
+        "drivers": drivers,
+    }
