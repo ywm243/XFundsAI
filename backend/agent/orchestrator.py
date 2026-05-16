@@ -235,7 +235,7 @@ def _summarize_tool_result(result: dict) -> str:
     summary = result.get("summary", {})
     data = result.get("data", [])
     parts = [f"返回{len(data)}条数据"]
-    if summary.get("total_trading_volume"):
+    if summary.get("total_trading_volume") is not None:
         parts.append(f"总交易量={summary['total_trading_volume']}")
     if summary.get("total_change_pct") is not None:
         parts.append(f"变化率={summary['total_change_pct']}%")
@@ -279,8 +279,8 @@ def _generate_fallback_summary(all_tool_results: list) -> str:
             continue
         result = r["result"]
         summary = result.get("summary", {})
-        total = summary.get("total_trading_volume", 0)
-        if total:
+        total = summary.get("total_trading_volume")
+        if total is not None:
             parts.append(f"总交易量为 {total:,.0f} 美元")
         change = summary.get("total_change_pct")
         if change is not None:

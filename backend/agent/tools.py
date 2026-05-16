@@ -289,35 +289,37 @@ def query_metrics(
             summary["total_change"] = change
             summary["total_change_pct"] = change_pct
 
-            # Per-row comparison
-            prev_map = {}
-            if dimensions and cmp_result.get("data"):
+            # Per-row comparison (only when dimensions present)
+            if dimensions:
+                prev_map = {}
+                if cmp_result.get("data"):
+                    dim_key = DIMENSIONS.get(dimensions[0], {}).get("label", "机构名称")
+                    for row in cmp_result["data"]:
+                        prev_map[row.get(dim_key, "")] = row
+
                 dim_key = DIMENSIONS.get(dimensions[0], {}).get("label", "机构名称")
-                for row in cmp_result["data"]:
-                    prev_map[row.get(dim_key, "")] = row
-
-            for row in data:
-                key = row.get(dim_key, "")
-                prev_row = prev_map.get(key, {})
-                prev_val = 0
-                if is_hedge_ratio:
-                    prev_val = prev_row.get("HEDGE_RATIO", 0)
-                else:
-                    prev_val = prev_row.get("TOTAL_AMOUNT", 0) or 0
-                try:
-                    prev_val = float(prev_val)
-                except (ValueError, TypeError):
+                for row in data:
+                    key = row.get(dim_key, "")
+                    prev_row = prev_map.get(key, {})
                     prev_val = 0
+                    if is_hedge_ratio:
+                        prev_val = prev_row.get("HEDGE_RATIO", 0)
+                    else:
+                        prev_val = prev_row.get("TOTAL_AMOUNT", 0) or 0
+                    try:
+                        prev_val = float(prev_val)
+                    except (ValueError, TypeError):
+                        prev_val = 0
 
-                current_val = 0
-                if is_hedge_ratio:
-                    current_val = float(row.get("HEDGE_RATIO", 0) or 0)
-                else:
-                    current_val = float(row.get("TOTAL_AMOUNT", 0) or 0)
+                    current_val = 0
+                    if is_hedge_ratio:
+                        current_val = float(row.get("HEDGE_RATIO", 0) or 0)
+                    else:
+                        current_val = float(row.get("TOTAL_AMOUNT", 0) or 0)
 
-                row["prev_value"] = prev_val
-                row["change_value"] = current_val - prev_val
-                row["change_pct"] = round((current_val - prev_val) / prev_val * 100, 2) if prev_val else None
+                    row["prev_value"] = prev_val
+                    row["change_value"] = current_val - prev_val
+                    row["change_pct"] = round((current_val - prev_val) / prev_val * 100, 2) if prev_val else None
 
     return {
         "metrics": metrics,
@@ -432,12 +434,12 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "metrics": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["trading_volume", "hedge_ratio"]},
+                        "items": {"type": "string", "enum": list(METRICS.keys())},
                         "description": "要查询的指标列表",
                     },
                     "dimensions": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["product_type", "bank", "manager_name", "customer", "month"]},
+                        "items": {"type": "string", "enum": list(DIMENSIONS.keys())},
                         "description": "分组维度（不传则返回汇总）",
                     },
                     "filters": {
@@ -478,7 +480,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "metric": {
                         "type": "string",
-                        "enum": ["trading_volume", "hedge_ratio"],
+                        "enum": list(METRICS.keys()),
                         "description": "要分析的指标",
                     },
                     "date_start": {
@@ -496,7 +498,7 @@ TOOL_DEFINITIONS = [
                     },
                     "by_dimension": {
                         "type": "string",
-                        "enum": ["product_type", "bank", "manager_name", "customer", "month"],
+                        "enum": list(DIMENSIONS.keys()),
                         "description": "按哪个维度拆解变化",
                     },
                     "top_n": {

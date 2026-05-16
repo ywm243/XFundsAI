@@ -72,7 +72,7 @@ class PostValidator:
         """Extract numbers with their text context from LLM output."""
         numbers = []
         # Match patterns like: "1,234.56万", "15%", "123456"
-        for match in re.finditer(r'([\d,]+\.?\d*)\s*(万|亿|%|美元|人民币)?', text):
+        for match in re.finditer(r'(-?[\d,]+\.?\d*)\s*(万|亿|%|美元|人民币)?', text):
             raw = match.group(0).strip()
             try:
                 value = float(match.group(1).replace(",", ""))
@@ -85,6 +85,10 @@ class PostValidator:
                 value *= 10000
             elif unit == "亿":
                 value *= 100000000
+
+            # Skip year-like numbers (1900-2099) without unit context
+            if not unit and 1900 <= value <= 2099 and raw.isdigit():
+                continue
 
             numbers.append({"raw": raw, "value": value, "unit": unit})
 
@@ -111,9 +115,9 @@ class PostValidator:
                 if abs(tv - rn) <= TOLERANCE_PCT_POINTS:
                     return True
 
-            # Also check raw percentages (0-100 range)
-            if text_num["unit"] == "%" and rn <= 100:
-                if abs(tv - rn) <= TOLERANCE_PCT_POINTS:
+            # Also check raw percentages — compare absolute values
+            if text_num["unit"] == "%":
+                if abs(abs(tv) - abs(rn)) <= TOLERANCE_PCT_POINTS:
                     return True
 
         return False
