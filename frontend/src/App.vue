@@ -121,7 +121,13 @@ async function handleSend(text) {
     if (isAnalytical && messages.length > 1) {
       // Analytical question → use mode=analyze pipeline
       const context = buildContext()
-      const result = await executeQuery({ text }, context, 'analyze')
+      const resp = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, context, mode: 'analyze' }),
+      })
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`)
+      const result = await resp.json()
       if (result.error) {
         messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
         return

@@ -161,8 +161,8 @@ def query_metrics(
             if date_end:
                 conditions.append(f"t.TRADEDATE<={int(date_end.replace('-', ''))}")
             if f.get("bank_name"):
-                safe_name = f["bank_name"].replace("'", "''")
-                conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%')")
+                safe_name = TradeQueryBuilder._escape_bank_name(f["bank_name"])
+                conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%' ESCAPE '\\')")
             if f.get("buy_sell"):
                 conditions.append(f"t.BUYORSELL='{f['buy_sell']}'")
             if f.get("special_states"):
