@@ -85,6 +85,8 @@ function getLastResultData() {
         rows: m.data.rows?.slice(0, 10),
         row_count: m.data.row_count,
         comparison: m.data.comparison,
+        params: m.data.params,
+        sql: m.data.sql,
       }
     }
   }

@@ -896,37 +896,121 @@ async def api_chat(request: Request):
 # ── Analysis endpoint ─────────────────────────────────────────────────────────
 
 
+def _fetch_breakdown_text(params: dict, date_start: str, date_end: str, label: str) -> str:
+    """Fetch breakdown by product type for a given period, return formatted text."""
+    lines = []
+    bank_name = (params.get("bank_name") or "") or None
+    appid = params.get("appid")
+
+    for pt in ("spot", "fwd", "swap"):
+        try:
+            sql = TradeQueryBuilder.build_aggregate_query(
+                product_type=pt,
+                date_start=date_start or None,
+                date_end=date_end or None,
+                bank_name=bank_name,
+                appid=appid,
+            )
+            cols, rows = _execute_oracle(sql)
+            if rows and rows[0][0] is not None:
+                amt = float(rows[0][0])
+                cnt = int(rows[0][1])
+                lines.append(f"  {pt}: 金额={amt:,.2f}, 笔数={cnt}")
+            else:
+                lines.append(f"  {pt}: 无数据")
+        except Exception as exc:
+            lines.append(f"  {pt}: 查询异常({exc})")
+    return "\n".join(lines)
+
+
 @app.post("/api/analyze")
 async def analyze(body: dict):
-    """Use LLM to analyze previous query results."""
+    """Use LLM to analyze previous query results based on real data only."""
     text = body.get("text", "")
     previous_data = body.get("previous_data", {})
-    context = body.get("context", [])
 
-    summary = previous_data.get("summary", "")
     comparison = previous_data.get("comparison", {})
+    params = previous_data.get("params", {})
+
+    if not params:
+        return {"summary": "缺少查询参数，无法分析"}
+
+    # Build real data context for the LLM
+    data_parts = []
+
+    # 1. Query context
+    date_start = params.get("date_start", "")
+    date_end = params.get("date_end", "")
+    bank_name = params.get("bank_name", "") or ""
+    dim = params.get("dimension", "bank")
+
+    data_parts.append(f"查询期间: {date_start} ~ {date_end}")
+    if bank_name:
+        data_parts.append(f"机构: {bank_name}")
+    data_parts.append(f"聚合维度: {dim}")
+
+    # 2. Current period breakdown by product type
+    data_parts.append("")
+    data_parts.append("=== 当前期分产品类型 ===")
+    try:
+        current_breakdown = await asyncio.to_thread(
+            _fetch_breakdown_text, params, date_start, date_end, "当前期"
+        )
+        data_parts.append(current_breakdown)
+    except Exception as exc:
+        logger.warning("Breakdown query failed: %s", exc)
+        data_parts.append(f"  (分产品数据查询异常: {exc})")
+
+    # 3. Comparison data
+    if comparison:
+        label = comparison.get("label", comparison.get("type", ""))
+        change_amt = comparison.get("change_amount", 0)
+        change_rate = comparison.get("change_rate", 0)
+        cmp_amt = comparison.get("compare_amount", 0)
+        cmp_start = comparison.get("cmp_start", "")
+        cmp_end = comparison.get("cmp_end", "")
+
+        data_parts.append("")
+        data_parts.append(f"=== {label}对比 ===")
+        data_parts.append(f"当前期: {date_start} ~ {date_end}")
+        data_parts.append(f"对比期: {cmp_start} ~ {cmp_end}")
+        data_parts.append(f"变化额: {change_amt:+,.2f}")
+        data_parts.append(f"变化率: {change_rate:+.2f}%")
+
+        # 4. Comparison period breakdown by product type
+        data_parts.append("")
+        data_parts.append("=== 对比期分产品类型 ===")
+        try:
+            cmp_breakdown = await asyncio.to_thread(
+                _fetch_breakdown_text, params, cmp_start, cmp_end, "对比期"
+            )
+            data_parts.append(cmp_breakdown)
+        except Exception as exc:
+            logger.warning("Comparison breakdown query failed: %s", exc)
+            data_parts.append(f"  (分产品数据查询异常: {exc})")
+
+    real_data = "\n".join(data_parts)
+    logger.info("Analyze data context:\n%s", real_data)
 
     system_prompt = (
-        "你是一个外汇交易数据分析助手。根据用户的问题和已有的查询结果数据，"
-        "给出专业、简洁的分析。分析要基于数据说话，不要编造数字。"
-        "回答控制在 200 字以内。"
+        "你是一个严谨的外汇交易数据分析助手。\n\n"
+        "规则：\n"
+        "1. 只根据下面提供的真实数据进行分析，不要编造任何数字。\n"
+        "2. 如果你无法从现有数据中确定变化原因，直接说明缺少什么数据导致无法分析。\n"
+        "3. 分析要简洁专业，控制在 200 字以内。\n"
+        "4. 如果数据表明某类产品变化显著，可以指出。\n\n"
+        "真实数据:\n"
+        f"{real_data}"
     )
 
-    cmp_info = ""
-    if comparison:
-        cmp_type = comparison.get("type", "")
-        label = comparison.get("label", cmp_type)
-        change = comparison.get("change_amount", 0)
-        rate = comparison.get("change_rate", 0)
-        cmp_info = f"\n{label}变化: {change:+,.2f} USD ({rate:+.2f}%)"
+    user_prompt = f"用户问题: {text}"
 
-    user_prompt = (
-        f"用户问题: {text}\n"
-        f"当前数据摘要: {summary}{cmp_info}\n"
-        f"请分析可能的原因。"
-    )
+    try:
+        result_text = await asyncio.to_thread(llm_chat, system_prompt, user_prompt)
+    except Exception as exc:
+        logger.warning("LLM chat failed: %s", exc)
+        result_text = None
 
-    result_text = await asyncio.to_thread(llm_chat, system_prompt, user_prompt)
     if not result_text:
         return JSONResponse(status_code=503, content={"error": "分析服务暂不可用，请稍后重试"})
 

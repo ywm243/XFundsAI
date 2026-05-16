@@ -124,7 +124,7 @@ def llm_chat(system_prompt: str, user_prompt: str) -> str | None:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            timeout=30,
+            timeout=120,
         )
         content = response.choices[0].message.content
         return content or None
