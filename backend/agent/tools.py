@@ -60,7 +60,7 @@ def _build_filters(filters: dict | None) -> dict:
     if f.get("special_states"):
         raw = f["special_states"]
         if isinstance(raw, str):
-            params["special_states"] = raw
+            params["special_states"] = [s.strip() for s in raw.split(",") if s.strip().isdigit()]
     if f.get("appid"):
         params["appid"] = f["appid"]
     return params
@@ -143,9 +143,7 @@ def query_metrics(
 
         # Custom dimensions that TradeQueryBuilder._group_cols() doesn't support
         if dim in ("month", "product_type"):
-            f = _build_filters(filters)
-            f.setdefault("product_type", "all")
-
+            # f already built above, reuse it
             select_col = dim_info["select_col"]
             group_col = dim_info["group_col"]
 
@@ -170,8 +168,9 @@ def query_metrics(
             if f.get("special_states"):
                 raw = f["special_states"]
                 if isinstance(raw, str):
-                    vals = ",".join(s.strip() for s in raw.split(","))
-                    conditions.append(f"t.SPECIALSTATE IN ({vals})")
+                    vals = [s.strip() for s in raw.split(",") if s.strip().isdigit()]
+                    if vals:
+                        conditions.append(f"t.SPECIALSTATE IN ({','.join(vals)})")
 
             where_clause = "\n  AND ".join(conditions)
 
@@ -180,7 +179,17 @@ def query_metrics(
             VIEW_MAP = {"spot": "XF_FX_SPOTTRADE_VIEW", "fwd": "XF_FX_FWDTRADE_VIEW", "swap": "XF_FX_SWAPTRADE_VIEW"}
             COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME"]
 
-            if pt == "all":
+            if dim == "product_type":
+                # Need PT column to group by product type
+                if pt == "all":
+                    subs = []
+                    for pt_name, view_name in VIEW_MAP.items():
+                        subs.append(f"SELECT {', '.join(COMMON_FIELDS)}, '{pt_name}' as PT FROM {view_name}")
+                    from_sql = "(\n    " + "\n    UNION ALL\n    ".join(subs) + "\n) t"
+                else:
+                    view = VIEW_MAP.get(pt)
+                    from_sql = f"(\n    SELECT {', '.join(COMMON_FIELDS)}, '{pt}' as PT FROM {view}\n) t"
+            elif pt == "all":
                 subs = []
                 for view in VIEW_MAP.values():
                     subs.append(f"SELECT {', '.join(COMMON_FIELDS)} FROM {view}")
@@ -288,7 +297,7 @@ def query_metrics(
                     prev_map[row.get(dim_key, "")] = row
 
             for row in data:
-                key = row.get(dimensions[0] if dimensions else "机构名称", "")
+                key = row.get(dim_key, "")
                 prev_row = prev_map.get(key, {})
                 prev_val = 0
                 if is_hedge_ratio:
