@@ -706,10 +706,23 @@ def _build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None
     total_usd = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
     total_count = len(rows)
 
+    # Dimension label mapping
+    dim = parsed.get("dimension", "bank")
+    dim_label = {"bank": "机构", "customer": "客户", "customer_id": "客户", "manager": "客户经理", "manager_name": "客户经理"}.get(dim, "机构")
+
     parts = [f"{date_start} ~ {date_end}"]
     if bank_name:
         parts.append(f"{bank_name}")
-    parts.append(f"全市场共{total_count}家交易对手")
+
+    if parsed.get("aggregate"):
+        # Aggregate query — each row is a group (institution / customer / manager)
+        if not (bank_name and total_count == 1):
+            # Skip "共1家机构" when user already specified a single bank
+            parts.append(f"共{total_count}家{dim_label}")
+    else:
+        # Detail query — each row is a trade record
+        parts.append(f"共{total_count}笔交易")
+
     parts.append(f"合计{total_usd:,.2f}万美元")
 
     if comparison:
