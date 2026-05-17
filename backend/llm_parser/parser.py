@@ -235,24 +235,81 @@ def _parse_bank_name(text: str) -> str:
 def _parse_special_states(text: str) -> str:
     """Extract special state filter from query text.
 
-    返回逗号分隔的状态值，如 "0,1"。
-    映射（与 semantic_rules.json 一致）：
-      逾期/已过期 → 1, 展期/延期 → 3, 提前交割 → 4, 平仓/已平仓 → 5
+    返回逗号分隔的状态值，如 "1,2,6,7,10,11,15,17"。
+    泛化映射（与业务语义一致）：
+      平仓/平盘 → 所有平仓子类 (1,2,6,7,10,11,15,17)
+      提前交割 → 所有提前交割子类 (4,16)
+      展期/延期 → 所有展期子类 (3,5,12,13)
+      开仓/签约/正常交易 → 0
 
-    注意："在途"不是 SPECIALSTATE 字段，不在此处处理。
-    "在途"=totaldelivery 表剩余金额>0（未完结），可能表现为签约、展期远端、提前交割近端。
+    注意："逾期"属于交易生命周期状态，不在此处处理（见 _parse_lifecycle_status）。
+    未指定特殊交易类型时不返回任何值（查询时不加 SPECIALSTATE 条件）。
+    """
+    matched_set = set()
+
+    # 精确匹配（长关键词优先）
+    specific_rules = [
+        (["全部平仓"], "6"),
+        (["交割日平仓"], "2"),
+        (["提前平仓"], "1,10"),
+        (["到期平仓"], "11"),
+        (["近端提前平仓"], "17"),
+        (["近端到期平仓"], "15"),
+        (["反向平盘"], "7"),
+        (["近端原价展期"], "12"),
+        (["近端市价展期"], "13"),
+        (["原价展期"], "5"),
+        (["市价展期"], "3"),
+        (["近端提前交割"], "16"),
+        (["近端到期交割"], "14"),
+        (["开仓", "签约", "正常交易"], "0"),
+    ]
+    # 泛化规则（仅在没有精确匹配时生效）
+    broad_rules = [
+        (["平仓", "平盘"], "1,2,6,7,10,11,15,17"),
+        (["提前交割", "提前交收"], "4,16"),
+        (["展期", "延期"], "3,5,12,13"),
+    ]
+
+    # 先精确匹配
+    for keywords, value_str in specific_rules:
+        if any(kw in text for kw in keywords):
+            for v in value_str.split(","):
+                matched_set.add(v)
+
+    # 如果没有精确匹配，才使用泛化规则
+    if not matched_set:
+        for keywords, value_str in broad_rules:
+            if any(kw in text for kw in keywords):
+                for v in value_str.split(","):
+                    matched_set.add(v)
+
+    return ",".join(sorted(matched_set, key=int)) if matched_set else ""
+
+
+def _parse_lifecycle_status(text: str) -> str | None:
+    """Extract lifecycle status filter from query text.
+
+    生命周期状态基于 XF_FX_TOTALDELIVERY 表和交易表的 MATURITYDATE 判断：
+      未到期 → "not_due"
+      逾期   → "overdue"
+      已到期 → "due_today"
+      未完结 → "unclosed"（未到期+逾期+已到期）
+      已完结 → "closed"
+
+    未指定生命周期状态时返回 None。
     """
     rules = [
-        (["逾期", "已过期"], "1"),
-        (["展期", "延期"], "3"),
-        (["提前交割", "提前交收"], "4"),
-        (["平仓", "已平仓"], "5"),
+        (["未到期交易量", "未到期交易", "未到期"], "not_due"),
+        (["逾期交易量", "逾期交易", "逾期"], "overdue"),
+        (["已到期交易", "到期交易", "已到期"], "due_today"),
+        (["未完结交易", "未结清", "未了结", "未完结"], "unclosed"),
+        (["已完结交易", "已结清", "已了结", "完结交易", "已完结"], "closed"),
     ]
-    matched = []
     for keywords, value in rules:
         if any(kw in text for kw in keywords):
-            matched.append(value)
-    return ",".join(matched) if matched else ""
+            return value
+    return None
 
 
 def _parse_trade_class(text: str) -> str:
@@ -586,6 +643,7 @@ def rule_based_parse(text: str) -> dict:
         "date_end": date_end,
         "special_states": _parse_special_states(text),
         "trade_class": _parse_trade_class(text),
+        "lifecycle_status": "",
         "buy_sell": buy_sell,
         "bank_name": bank_name,
         "cust_name": cust_name,

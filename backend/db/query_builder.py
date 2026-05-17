@@ -14,7 +14,7 @@ class TradeQueryBuilder:
         "swap": "XF_FX_SWAPTRADE_VIEW",
     }
 
-    COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME"]
+    COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME", "DOWNLOADKEY"]
 
     @staticmethod
     def _validate_buy_sell(buy_sell):
@@ -98,8 +98,11 @@ class TradeQueryBuilder:
             safe_cust = cust_name.replace("'", "''")
             conditions.append(f"t.CUSTNAME='{safe_cust}'")
 
-        if special_states is not None and len(special_states) > 0:
-            vals = ",".join(str(int(s)) for s in special_states)
+        if special_states is not None and str(special_states).strip():
+            if isinstance(special_states, str):
+                vals = ",".join(str(int(s.strip())) for s in special_states.split(",") if s.strip())
+            else:
+                vals = ",".join(str(int(s)) for s in special_states)
             conditions.append(f"t.SPECIALSTATE IN ({vals})")
         elif hedge_ratio_default:
             conditions.append("t.SPECIALSTATE=0")
@@ -110,45 +113,65 @@ class TradeQueryBuilder:
         return conditions
 
     @classmethod
-    def _build_from(cls, product_type, with_pt=False):
-        """Build FROM sub-query (UNION ALL of views)."""
+    def _build_from(cls, product_type, with_pt=False, with_maturity=False):
+        """Build FROM sub-query (UNION ALL of views).
+
+        with_maturity: add MATURITYDATE column (spot uses VALUEDATE as fallback).
+        """
         if product_type == "all":
             subqueries = []
-            if with_pt:
-                for pt, view in cls.VIEW_MAP.items():
-                    subqueries.append(
-                        f"SELECT {', '.join(cls.COMMON_FIELDS)}, '{pt}' as PT FROM {view}"
-                    )
-            else:
-                for view in cls.VIEW_MAP.values():
-                    subqueries.append(f"SELECT {', '.join(cls.COMMON_FIELDS)} FROM {view}")
+            for pt, view in cls.VIEW_MAP.items():
+                extras = []
+                if with_pt:
+                    extras.append(f"'{pt}' as PT")
+                if with_maturity:
+                    maturity_col = "VALUEDATE" if pt == "spot" else "MATURITYDATE"
+                    extras.append(f"{maturity_col} as MATURITYDATE")
+                cols = ", ".join(cls.COMMON_FIELDS + extras) if extras else ", ".join(cls.COMMON_FIELDS)
+                subqueries.append(f"SELECT {cols} FROM {view}")
             return "(\n    " + "\n    UNION ALL\n    ".join(subqueries) + "\n) t"
         else:
             view = cls.VIEW_MAP[product_type]
+            extras = []
             if with_pt:
-                return f"(\n    SELECT {', '.join(cls.COMMON_FIELDS)}, '{product_type}' as PT FROM {view}\n) t"
-            else:
-                return f"(\n    SELECT {', '.join(cls.COMMON_FIELDS)} FROM {view}\n) t"
+                extras.append(f"'{product_type}' as PT")
+            if with_maturity:
+                maturity_col = "VALUEDATE" if product_type == "spot" else "MATURITYDATE"
+                extras.append(f"{maturity_col} as MATURITYDATE")
+            cols = ", ".join(cls.COMMON_FIELDS + extras) if extras else ", ".join(cls.COMMON_FIELDS)
+            return f"(\n    SELECT {cols} FROM {view}\n) t"
 
     # ---- query builders ----
 
     @classmethod
     def build_query(cls, product_type="all", date_start=None, date_end=None,
                     special_states=None, buy_sell=None, bank_name=None,
-                    cust_name=None, appid=None):
+                    cust_name=None, appid=None, lifecycle_status=None):
         cls._validate_product_type(product_type)
         cls._validate_buy_sell(buy_sell)
 
         cte, bank_cond = cls._build_cte(bank_name)
         conditions = cls._build_where_conditions(date_start, date_end, buy_sell, special_states, appid, bank_cond, cust_name=cust_name)
+        with_maturity = lifecycle_status is not None
+        from_sql = cls._build_from(product_type, with_pt=with_maturity, with_maturity=with_maturity)
+
+        extra_joins = []
+        if bank_name or (cls._dimension_config and cls._dimension_config.get("bank", {}).get("join_clause")):
+            extra_joins.append("LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID")
+
+        if lifecycle_status:
+            lc_join, lc_conds = cls._lifecycle_join_and_conditions(lifecycle_status, product_type)
+            extra_joins.append(lc_join)
+            conditions.extend(lc_conds)
+
         where_clause = "\n  AND ".join(conditions)
-        from_sql = cls._build_from(product_type)
+        joins_sql = "\n".join(extra_joins)
 
         sql = (
             f"{cte}"
             f"SELECT t.{', t.'.join(cls.COMMON_FIELDS)}, b.DIPNAME\n"
             f"FROM {from_sql}\n"
-            f"LEFT JOIN XF_BASE_BANK b ON t.BANKID = b.BANKID\n"
+            f"{joins_sql}\n"
             f"WHERE {where_clause}"
         )
         return sql
@@ -174,7 +197,7 @@ class TradeQueryBuilder:
     @classmethod
     def build_aggregate_query(cls, product_type="all", date_start=None, date_end=None,
                                special_states=None, buy_sell=None, bank_name=None,
-                               cust_name=None, appid=None, dimension=None):
+                               cust_name=None, appid=None, dimension=None, lifecycle_status=None):
         """Build an aggregate SQL that returns SUM and COUNT.
 
         When dimension is provided, groups by that dimension (e.g. 客户经理名称).
@@ -185,9 +208,18 @@ class TradeQueryBuilder:
 
         cte, bank_cond = cls._build_cte(bank_name)
         conditions = cls._build_where_conditions(date_start, date_end, buy_sell, special_states, appid, bank_cond, cust_name=cust_name)
-        where_clause = "\n  AND ".join(conditions)
-        from_sql = cls._build_from(product_type)
+        needs_pt = dimension == "product_type" or lifecycle_status is not None
+        with_maturity = lifecycle_status is not None
+        from_sql = cls._build_from(product_type, with_pt=needs_pt, with_maturity=with_maturity)
         join = cls._join_clause(dimension, bank_name)
+
+        if lifecycle_status:
+            lc_join, lc_conds = cls._lifecycle_join_and_conditions(lifecycle_status, product_type)
+            if lc_join:
+                join = join + "\n" + lc_join if join else lc_join
+            conditions.extend(lc_conds)
+
+        where_clause = "\n  AND ".join(conditions)
 
         if dimension:
             select_col, group_col = cls._group_cols(dimension)
@@ -213,7 +245,8 @@ class TradeQueryBuilder:
     @classmethod
     def build_hedge_ratio_query(cls, product_type="all", date_start=None, date_end=None,
                                  special_states=None, buy_sell=None, bank_name=None,
-                                 dimension="bank", cust_name=None, appid=None):
+                                 dimension="bank", cust_name=None, appid=None,
+                                 lifecycle_status=None):
         """Build a grouped SQL that returns hedge ratio by dimension."""
         cls._validate_product_type(product_type)
         cls._validate_buy_sell(buy_sell)
@@ -222,9 +255,22 @@ class TradeQueryBuilder:
         conditions = cls._build_where_conditions(date_start, date_end, buy_sell, special_states, appid, bank_cond,
                                                   cust_name=cust_name, hedge_ratio_default=True)
         where_clause = "\n  AND ".join(conditions)
-        from_sql = cls._build_from(product_type, with_pt=True)
+        from_sql = cls._build_from(product_type, with_pt=True,
+                                    with_maturity=lifecycle_status is not None)
         select_col, group_col = cls._group_cols(dimension)
         join = cls._join_clause(dimension, bank_name)
+
+        extra_joins = []
+        if join:
+            extra_joins.append(join)
+        if lifecycle_status:
+            lc_join, lc_conds = cls._lifecycle_join_and_conditions(lifecycle_status, product_type)
+            if lc_join:
+                extra_joins.append(lc_join)
+            if lc_conds:
+                where_clause += "\n  AND " + "\n  AND ".join(lc_conds)
+
+        join_sql = "\n".join(extra_joins) if extra_joins else ""
 
         sql = (
             f"{cte}"
@@ -233,7 +279,7 @@ class TradeQueryBuilder:
             f"       SUM(CASE WHEN t.PT IN ('fwd','swap') THEN 1 ELSE 0 END) as DERIVATIVE_COUNT,\n"
             f"       SUM(t.USDAMOUNT) as TOTAL_AMOUNT, COUNT(*) as TRADE_COUNT\n"
             f"FROM {from_sql}\n"
-            f"{join}\n"
+            f"{join_sql}\n"
             f"WHERE {where_clause}\n"
             f"GROUP BY {group_col}\n"
             f"ORDER BY HEDGE_RATIO DESC"
@@ -256,13 +302,16 @@ class TradeQueryBuilder:
             "customer_id": ("t.CUSTOMERID as 客户号", "t.CUSTOMERID"),
             "manager": ("t.CUSTMAINMANAGER as 客户经理ID", "t.CUSTMAINMANAGER"),
             "manager_name": ("t.CUSTMANAGERNAME as 客户经理名称", "t.CUSTMANAGERNAME"),
+            "month": ("TO_CHAR(t.TRADEDATE, 'YYYY-MM') as 月份", "TO_CHAR(t.TRADEDATE, 'YYYY-MM')"),
+            "product_type": ("t.PT as 产品类型", "t.PT"),
         }
         return mapping.get(dimension, mapping["bank"])
 
     @classmethod
     def build_ranking_query(cls, product_type="all", date_start=None, date_end=None,
                              special_states=None, buy_sell=None, bank_name=None, top_n=10,
-                             dimension="bank", hedge_ratio=False, cust_name=None, appid=None):
+                             dimension="bank", hedge_ratio=False, cust_name=None, appid=None,
+                             lifecycle_status=None):
         """Build a ranking SQL grouped by institution, ordered by SUM(USDAMOUNT) DESC, limited by top_n.
         When hedge_ratio=True, orders by HEDGE_RATIO DESC instead."""
         cls._validate_product_type(product_type)
@@ -272,8 +321,17 @@ class TradeQueryBuilder:
         cte, bank_cond = cls._build_cte(bank_name)
         conditions = cls._build_where_conditions(date_start, date_end, buy_sell, special_states, appid, bank_cond,
                                                   cust_name=cust_name, hedge_ratio_default=hedge_ratio)
+        from_sql = cls._build_from(product_type, with_pt=hedge_ratio or lifecycle_status is not None,
+                                    with_maturity=lifecycle_status is not None)
+        join = cls._join_clause(dimension, bank_name)
+
+        if lifecycle_status:
+            lc_join, lc_conds = cls._lifecycle_join_and_conditions(lifecycle_status, product_type)
+            if lc_join:
+                join = join + "\n" + lc_join if join else lc_join
+            conditions.extend(lc_conds)
+
         where_clause = "\n  AND ".join(conditions)
-        from_sql = cls._build_from(product_type, with_pt=hedge_ratio)
         select_col, group_col = cls._group_cols(dimension)
         join = cls._join_clause(dimension, bank_name)
 
@@ -315,7 +373,8 @@ class TradeQueryBuilder:
     def build_filtered_query(cls, product_type="all", date_start=None, date_end=None,
                               special_states=None, buy_sell=None, bank_name=None,
                               amount_op=None, amount_value=None,
-                              dimension="bank", hedge_ratio=False, cust_name=None, appid=None):
+                              dimension="bank", hedge_ratio=False, cust_name=None, appid=None,
+                              lifecycle_status=None):
         """Build a grouped SQL with HAVING filter on SUM(USDAMOUNT).
 
         amount_op mapping: "gt"→">", "gte"→">=", "lt"→"<", "lte"→"<=".
@@ -328,8 +387,17 @@ class TradeQueryBuilder:
         cte, bank_cond = cls._build_cte(bank_name)
         conditions = cls._build_where_conditions(date_start, date_end, buy_sell, special_states, appid, bank_cond,
                                                   cust_name=cust_name, hedge_ratio_default=hedge_ratio)
+        from_sql = cls._build_from(product_type, with_pt=hedge_ratio or lifecycle_status is not None,
+                                    with_maturity=lifecycle_status is not None)
+        join = cls._join_clause(dimension, bank_name)
+
+        if lifecycle_status:
+            lc_join, lc_conds = cls._lifecycle_join_and_conditions(lifecycle_status, product_type)
+            if lc_join:
+                join = join + "\n" + lc_join if join else lc_join
+            conditions.extend(lc_conds)
+
         where_clause = "\n  AND ".join(conditions)
-        from_sql = cls._build_from(product_type, with_pt=hedge_ratio)
 
         # --- HAVING clause ---
         having_clause = ""
@@ -370,3 +438,78 @@ class TradeQueryBuilder:
             f"ORDER BY {order_by}"
         )
         return sql
+
+    # ---- Lifecycle status helpers ----
+
+    LIFECYCLE_STATUS_OPTIONS = {"not_due", "overdue", "due_today", "unclosed", "closed"}
+
+    @classmethod
+    def _lifecycle_join_and_conditions(cls, lifecycle_status, product_type):
+        """Return (join_sql, extra_conditions) for lifecycle status filtering.
+
+        Join: LEFT JOIN XF_FX_TOTALDELIVERY d ON t.DOWNLOADKEY = d.DOWNLOADKEY
+        Conditions vary by lifecycle_status and product_type (spot/fwd vs swap).
+        """
+        join = "LEFT JOIN XF_FX_TOTALDELIVERY d ON t.DOWNLOADKEY = d.DOWNLOADKEY"
+        conditions = []
+
+        # Delivery amount columns differ by product type
+        if product_type == "swap":
+            nd1, nd2 = "d.NOFARDELIVERYAMOUNT1", "d.NOFARDELIVERYAMOUNT2"
+        else:
+            nd1, nd2 = "d.NODELIVERYAMOUNT1", "d.NODELIVERYAMOUNT2"
+
+        if lifecycle_status == "not_due":
+            # Has undelivered amounts (OR) AND maturity > sysdate
+            if product_type == "all":
+                conditions.append(
+                    f"(CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT1 ELSE d.NODELIVERYAMOUNT1 END > 0"
+                    f" OR CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT2 ELSE d.NODELIVERYAMOUNT2 END > 0)"
+                )
+            else:
+                conditions.append(f"({nd1} > 0 OR {nd2} > 0)")
+            conditions.append("t.MATURITYDATE > TO_NUMBER(TO_CHAR(SYSDATE, 'YYYYMMDD'))")
+
+        elif lifecycle_status == "overdue":
+            if product_type == "all":
+                conditions.append(
+                    f"(CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT1 ELSE d.NODELIVERYAMOUNT1 END > 0"
+                    f" OR CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT2 ELSE d.NODELIVERYAMOUNT2 END > 0)"
+                )
+            else:
+                conditions.append(f"({nd1} > 0 OR {nd2} > 0)")
+            conditions.append("t.MATURITYDATE < TO_NUMBER(TO_CHAR(SYSDATE, 'YYYYMMDD'))")
+
+        elif lifecycle_status == "due_today":
+            if product_type == "all":
+                conditions.append(
+                    f"(CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT1 ELSE d.NODELIVERYAMOUNT1 END > 0"
+                    f" OR CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT2 ELSE d.NODELIVERYAMOUNT2 END > 0)"
+                )
+            else:
+                conditions.append(f"({nd1} > 0 OR {nd2} > 0)")
+            conditions.append("t.MATURITYDATE = TO_NUMBER(TO_CHAR(SYSDATE, 'YYYYMMDD'))")
+
+        elif lifecycle_status == "unclosed":
+            # unclosed = not_due OR overdue OR due_today (has undelivered amounts)
+            if product_type == "all":
+                conditions.append(
+                    f"(CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT1 ELSE d.NODELIVERYAMOUNT1 END > 0"
+                    f" OR CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT2 ELSE d.NODELIVERYAMOUNT2 END > 0)"
+                )
+            else:
+                conditions.append(f"({nd1} > 0 OR {nd2} > 0)")
+
+        elif lifecycle_status == "closed":
+            if product_type == "all":
+                conditions.append(
+                    f"CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT1 ELSE d.NODELIVERYAMOUNT1 END = 0"
+                )
+                conditions.append(
+                    f"CASE WHEN t.PT = 'swap' THEN d.NOFARDELIVERYAMOUNT2 ELSE d.NODELIVERYAMOUNT2 END = 0"
+                )
+            else:
+                conditions.append(f"{nd1} = 0")
+                conditions.append(f"{nd2} = 0")
+
+        return join, conditions

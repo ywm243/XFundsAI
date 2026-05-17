@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 
 from agent.tools import query_metrics, decompose_change
+from services.result_formatter import _metric_label
 from agent.post_validator import PostValidator
 from agent.memory import AgentMemory
 from llm_parser.llm_client import llm_tool_call
@@ -29,6 +30,13 @@ DIMENSION_LABELS = {
 COMPARISON_LABELS = {
     "yoy": "同比",
     "mom": "环比",
+}
+
+PRODUCT_TYPE_LABELS = {
+    "spot": "即期外汇",
+    "fwd": "远期外汇",
+    "swap": "外汇掉期",
+    "all": "所有交易",
 }
 
 
@@ -67,6 +75,8 @@ def _build_tool_filters(gatekeep_params: dict | None) -> dict:
         filters["special_states"] = params["special_states"]
     if params.get("appid"):
         filters["appid"] = params["appid"]
+    if params.get("lifecycle_status"):
+        filters["lifecycle_status"] = params["lifecycle_status"]
     return filters
 
 
@@ -125,7 +135,8 @@ def _build_data_prompt(
     # Filter info
     filter_parts = []
     if params.get("product_type") and params["product_type"] != "all":
-        filter_parts.append(f"产品类型={params['product_type']}")
+        pt_label = PRODUCT_TYPE_LABELS.get(params["product_type"], params["product_type"])
+        filter_parts.append(f"产品类型={pt_label}")
     if params.get("bank_name"):
         filter_parts.append(f"机构={params['bank_name']}")
     if params.get("cust_name"):
@@ -275,7 +286,7 @@ def run_analysis(
             all_tool_results.append({"tool": "decompose_change", "error": f"{type(exc).__name__}: {exc}"})
 
     # ---- Extract structured data for frontend ----
-    analysis_data = _extract_analysis_data(all_tool_results)
+    analysis_data = _extract_analysis_data(all_tool_results, parsed=gatekeep_params)
 
     # ---- LLM generates analysis text from data (no tools) ----
     system_prompt = _build_system_prompt(context_prompt)
@@ -377,11 +388,12 @@ def _build_insights_from_tools(all_results: list) -> list:
     return insights
 
 
-def _extract_analysis_data(all_tool_results: list[dict]) -> dict:
+def _extract_analysis_data(all_tool_results: list[dict], parsed: dict | None = None) -> dict:
     """Extract structured analysis data from tool results for frontend rendering."""
     analysis = {
         "baseline": {},
         "dimensions": [],
+        "metric_label": _metric_label(parsed) if parsed else "交易量",
     }
     for r in all_tool_results:
         if "result" not in r:

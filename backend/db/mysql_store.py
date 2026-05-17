@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pymysql
+from dbutils.pooled_db import PooledDB
 from pymysql.cursors import DictCursor
 
 from db.config import MySQLConfig
@@ -19,18 +20,23 @@ logger = logging.getLogger(__name__)
 _config = MySQLConfig()
 _lock = threading.Lock()
 
+_pool = PooledDB(
+    creator=pymysql,
+    maxconnections=10,
+    mincached=2,
+    cursorclass=DictCursor,
+    autocommit=False,
+    **_config.dsn,
+)
+
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_conn() -> pymysql.Connection:
-    """Get a new MySQL connection with DictCursor."""
-    return pymysql.connect(
-        cursorclass=DictCursor,
-        autocommit=False,
-        **_config.dsn,
-    )
+    """Get a connection from the pool."""
+    return _pool.connection()
 
 
 SCHEMA_SQL = """

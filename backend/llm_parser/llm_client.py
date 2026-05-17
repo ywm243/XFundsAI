@@ -32,6 +32,7 @@ def _fields_defaults() -> dict:
         "date_start": "",
         "date_end": "",
         "special_states": "",
+        "lifecycle_status": "",
         "buy_sell": "",
         "bank_name": "",
         "cust_name": "",

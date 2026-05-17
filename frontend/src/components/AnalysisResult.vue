@@ -23,6 +23,8 @@ const analysisData = computed(() => props.data.analysis_data)
 
 const baseline = computed(() => analysisData.value?.baseline || {})
 
+const metricLabel = computed(() => analysisData.value?.metric_label || '交易量')
+
 const dimensions = computed(() => analysisData.value?.dimensions || [])
 
 const isUp = computed(() => {
@@ -76,7 +78,7 @@ function getDimColumns(drivers) {
   return [
     { title: '名称', key: 'dimension_value', ellipsis: { tooltip: true } },
     {
-      title: '交易量变化',
+      title: `${metricLabel.value}变化`,
       key: 'change_value',
       render: renderChange,
       sorter: (a, b) => (a.change_value || 0) - (b.change_value || 0),
@@ -102,11 +104,11 @@ function getDimColumns(drivers) {
       <NCard title="📊 总览" class="ana-card" size="small" :bordered="true">
         <div class="kpi-row">
           <div class="kpi-box">
-            <div class="kpi-label">当期总交易量</div>
+            <div class="kpi-label">当期{{ metricLabel }}</div>
             <div class="kpi-value">{{ fmtNum(baseline.total_trading_volume) }}</div>
           </div>
           <div class="kpi-box">
-            <div class="kpi-label">上期总交易量</div>
+            <div class="kpi-label">上期{{ metricLabel }}</div>
             <div class="kpi-value">{{ fmtNum(baseline.prev_total_trading_volume) }}</div>
           </div>
           <div class="kpi-box">

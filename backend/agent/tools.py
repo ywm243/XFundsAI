@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 
 from db.query_builder import TradeQueryBuilder
-from db.connection import get_db
+from services.sql_executor import execute_oracle
 from llm_parser.parser import compute_comparison_dates
 
 logger = logging.getLogger(__name__)
@@ -37,12 +37,7 @@ DIMENSIONS = {
 
 def _execute_sql(sql: str) -> tuple[list, list]:
     """Execute SQL against Oracle and return (columns, rows)."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            cols = [desc[0] for desc in cur.description] if cur.description else []
-            rows = [list(row) for row in cur.fetchmany(10000)]
-    return cols, rows
+    return execute_oracle(sql)
 
 
 def _build_filters(filters: dict | None) -> dict:
@@ -63,6 +58,8 @@ def _build_filters(filters: dict | None) -> dict:
             params["special_states"] = [s.strip() for s in raw.split(",") if s.strip().isdigit()]
     if f.get("appid"):
         params["appid"] = f["appid"]
+    if f.get("lifecycle_status"):
+        params["lifecycle_status"] = f["lifecycle_status"]
     return params
 
 
@@ -129,6 +126,7 @@ def query_metrics(
             appid=f.get("appid"),
             bank_name=f.get("bank_name"),
             cust_name=f.get("cust_name"),
+            lifecycle_status=f.get("lifecycle_status"),
         )
         cols, rows = _execute_sql(sql)
         data_rows = _convert_rows_to_dicts(cols, rows)
@@ -156,70 +154,18 @@ def query_metrics(
 
         # Custom dimensions that TradeQueryBuilder._group_cols() doesn't support
         if dim in ("month", "product_type"):
-            # f already built above, reuse it
-            select_col = dim_info["select_col"]
-            group_col = dim_info["group_col"]
-
-            # Build WHERE conditions
-            conditions = ["t.TRADESTATUS=0"]
-            appid_val = f.get("appid")
-            if appid_val is not None:
-                if isinstance(appid_val, list):
-                    vals = ",".join(str(int(a)) for a in appid_val)
-                    conditions.append(f"t.APPID IN ({vals})")
-                else:
-                    conditions.append(f"t.APPID={int(appid_val)}")
-            if date_start:
-                conditions.append(f"t.TRADEDATE>={int(date_start.replace('-', ''))}")
-            if date_end:
-                conditions.append(f"t.TRADEDATE<={int(date_end.replace('-', ''))}")
-            if f.get("bank_name"):
-                TradeQueryBuilder._validate_name(f["bank_name"])
-                safe_name = TradeQueryBuilder._escape_bank_name(f["bank_name"])
-                conditions.append(f"t.BANKID IN (SELECT BANKID FROM XF_BASE_BANK WHERE DIPNAME LIKE '%{safe_name}%' ESCAPE '\\')")
-            if f.get("buy_sell") and f["buy_sell"] in ("B", "S"):
-                conditions.append(f"t.BUYORSELL='{f['buy_sell']}'")
-            if f.get("special_states"):
-                raw = f["special_states"]
-                if isinstance(raw, str):
-                    vals = [s.strip() for s in raw.split(",") if s.strip().isdigit()]
-                    if vals:
-                        conditions.append(f"t.SPECIALSTATE IN ({','.join(vals)})")
-
-            where_clause = "\n  AND ".join(conditions)
-
-            # Build FROM clause (UNION ALL of views)
-            pt = f.get("product_type", "all")
-            VIEW_MAP = {"spot": "XF_FX_SPOTTRADE_VIEW", "fwd": "XF_FX_FWDTRADE_VIEW", "swap": "XF_FX_SWAPTRADE_VIEW"}
-            COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME"]
-
-            if dim == "product_type":
-                # Need PT column to group by product type
-                if pt == "all":
-                    subs = []
-                    for pt_name, view_name in VIEW_MAP.items():
-                        subs.append(f"SELECT {', '.join(COMMON_FIELDS)}, '{pt_name}' as PT FROM {view_name}")
-                    from_sql = "(\n    " + "\n    UNION ALL\n    ".join(subs) + "\n) t"
-                else:
-                    view = VIEW_MAP.get(pt)
-                    from_sql = f"(\n    SELECT {', '.join(COMMON_FIELDS)}, '{pt}' as PT FROM {view}\n) t"
-            elif pt == "all":
-                subs = []
-                for view in VIEW_MAP.values():
-                    subs.append(f"SELECT {', '.join(COMMON_FIELDS)} FROM {view}")
-                from_sql = "(\n    " + "\n    UNION ALL\n    ".join(subs) + "\n) t"
-            else:
-                view = VIEW_MAP.get(pt)
-                from_sql = f"(\n    SELECT {', '.join(COMMON_FIELDS)} FROM {view}\n) t"
-
-            sql = (
-                f"SELECT {select_col}, SUM(t.USDAMOUNT) as TOTAL_AMOUNT, COUNT(*) as TRADE_COUNT\n"
-                f"FROM {from_sql}\n"
-                f"WHERE {where_clause}\n"
-                f"GROUP BY {group_col}\n"
-                f"ORDER BY TOTAL_AMOUNT DESC"
+            sql = TradeQueryBuilder.build_aggregate_query(
+                product_type=f.get("product_type", "all"),
+                date_start=date_start or None,
+                date_end=date_end or None,
+                buy_sell=f.get("buy_sell"),
+                special_states=f.get("special_states"),
+                appid=f.get("appid"),
+                bank_name=f.get("bank_name"),
+                cust_name=f.get("cust_name"),
+                dimension=dim,
+                lifecycle_status=f.get("lifecycle_status"),
             )
-
             cols, rows = _execute_sql(sql)
             data = _convert_rows_to_dicts(cols, rows)
 
@@ -237,6 +183,7 @@ def query_metrics(
                 appid=f.get("appid"),
                 bank_name=f.get("bank_name"),
                 cust_name=f.get("cust_name"),
+                lifecycle_status=f.get("lifecycle_status"),
             )
             cols, rows = _execute_sql(sql)
             data = _convert_rows_to_dicts(cols, rows)
@@ -255,6 +202,7 @@ def query_metrics(
                 appid=f.get("appid"),
                 bank_name=f.get("bank_name"),
                 cust_name=f.get("cust_name"),
+                lifecycle_status=f.get("lifecycle_status"),
             )
             cols, rows = _execute_sql(sql)
             data = _convert_rows_to_dicts(cols, rows)
@@ -276,6 +224,7 @@ def query_metrics(
             appid=f.get("appid"),
             bank_name=f.get("bank_name"),
             cust_name=f.get("cust_name"),
+            lifecycle_status=f.get("lifecycle_status"),
         )
         cols, rows = _execute_sql(sql)
         data = _convert_rows_to_dicts(cols, rows)

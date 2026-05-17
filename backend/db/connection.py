@@ -20,7 +20,7 @@ _oracle_error: str | None = None
 _pool = None
 
 
-def _session_callback(conn):
+def _session_callback(conn, tag=None):
     """Initialize NLS settings for each pooled connection."""
     with conn.cursor() as cur:
         cur.execute("ALTER SESSION SET NLS_DATE_FORMAT='YYYY-MM-DD'")

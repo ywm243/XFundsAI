@@ -82,9 +82,9 @@ const directionOptions = [
 ]
 
 const productTypeOptions = [
-  { value: 'spot', label: '即期' },
-  { value: 'fwd', label: '远期' },
-  { value: 'swap', label: '掉期' },
+  { value: 'spot', label: '即期外汇' },
+  { value: 'fwd', label: '远期外汇' },
+  { value: 'swap', label: '外汇掉期' },
 ]
 
 const appIdOptions = [
@@ -93,25 +93,33 @@ const appIdOptions = [
 ]
 
 const tradeTypeOptions = [
-  { value: 'spot', label: '即期 (spot)' },
-  { value: 'fwd', label: '远期 (fwd)' },
-  { value: 'swap', label: '掉期 (swap)' },
-  { value: 'all', label: '全部 (all)' },
+  { value: 'all', label: '所有交易 (all)' },
+  { value: 'spot', label: '即期外汇 (spot)' },
+  { value: 'fwd', label: '远期外汇 (fwd)' },
+  { value: 'swap', label: '外汇掉期 (swap)' },
 ]
 
 const specialSubTypeOptions = [
   { value: 'state', label: '特殊状态' },
+  { value: 'class_kaicang', label: '开仓交易' },
   { value: 'class_pingcang', label: '平仓交易' },
   { value: 'class_zhanqi', label: '展期交易' },
   { value: 'class_jiaoge', label: '提前交割交易' },
 ]
 
 const stateValueOptions = [
-  { value: '0', label: '0 - 在途' },
-  { value: '1', label: '1 - 逾期' },
-  { value: '3', label: '3 - 展期' },
-  { value: '4', label: '4 - 提前交割' },
-  { value: '5', label: '5 - 平仓' },
+  { value: '0', label: '0 - 正常交易' },
+  { value: '1,2,6,7,10,11,15,17', label: '平仓（全部子类）' },
+  { value: '4,16', label: '提前交割（全部子类）' },
+  { value: '3,5,12,13', label: '展期（全部子类）' },
+]
+
+const lifecycleStatusValueOptions = [
+  { value: 'not_due', label: 'not_due - 未到期' },
+  { value: 'overdue', label: 'overdue - 逾期' },
+  { value: 'due_today', label: 'due_today - 已到期' },
+  { value: 'unclosed', label: 'unclosed - 未完结' },
+  { value: 'closed', label: 'closed - 已完结' },
 ]
 
 const tradeClassValueOptions = [
@@ -312,6 +320,8 @@ function openEdit(item) {
   } else if (cat === 'special_trade_type') {
     editingItem.sub_type = rd.sub_type || 'state'
     editingItem.mapped_value = rd.value !== undefined ? String(rd.value) : ''
+  } else if (cat === 'lifecycle_status') {
+    editingItem.mapped_value = rd.value || ''
   } else if (cat === 'comparison_modifiers') {
     editingItem.comparison_type = rd.keyword === '环比' ? 'mom' : 'yoy'
     editingItem.compute_start = rd.compute_start || ''
@@ -362,6 +372,9 @@ function validateItem() {
   if (cat === 'special_trade_type' && !editingItem.mapped_value) {
     errors.push('映射值不能为空')
   }
+  if (cat === 'lifecycle_status' && !editingItem.mapped_value) {
+    errors.push('生命周期状态值不能为空')
+  }
   if (cat === 'comparison_modifiers' && !editingItem.comparison_type) {
     errors.push('对比类型不能为空')
   }
@@ -407,6 +420,11 @@ function buildRuleData() {
       rd.sub_type = editingItem.sub_type
       rd.value = editingItem.mapped_value
       rd.field = editingItem.sub_type === 'state' ? 'SPECIALSTATE' : 'SPECTRADECLASS'
+      break
+    case 'lifecycle_status':
+      rd.field = 'LIFECYCLE_STATUS'
+      rd.value = editingItem.mapped_value
+      rd.meaning = lifecycleStatusLabel(editingItem.mapped_value)
       break
     case 'comparison_modifiers':
       rd.comparison_type = editingItem.comparison_type
@@ -563,17 +581,33 @@ function directionLabel(d) {
 }
 
 function productTypeLabels(types) {
-  const map = { spot: '即期', fwd: '远期', swap: '掉期' }
+  const map = { spot: '即期外汇', fwd: '远期外汇', swap: '外汇掉期' }
   return (types || []).map(t => map[t] || t).join('/')
 }
 
 function tradeTypeLabel(v) {
-  const map = { spot: '即期外汇交易', fwd: '远期外汇交易', swap: '外汇掉期交易', all: '即期和远期全部' }
+  const map = { spot: '即期外汇交易', fwd: '远期外汇交易', swap: '外汇掉期交易', all: '所有交易' }
   return map[v] || v
 }
 
 function specialStateMeaning(v) {
-  const map = { '0': '在途状态', '1': '逾期状态', '3': '展期状态', '4': '提前交割状态', '5': '平仓状态' }
+  const map = {
+    '0': '正常交易',
+    '1,2,6,7,10,11,15,17': '平仓（全部子类）',
+    '4,16': '提前交割（全部子类）',
+    '3,5,12,13': '展期（全部子类）',
+  }
+  return map[String(v)] || String(v)
+}
+
+function lifecycleStatusLabel(v) {
+  const map = {
+    not_due: '未到期',
+    overdue: '逾期',
+    due_today: '已到期',
+    unclosed: '未完结',
+    closed: '已完结',
+  }
   return map[String(v)] || String(v)
 }
 
@@ -587,7 +621,7 @@ function tradeClassMeaning(v) {
 }
 
 function specialSubTypeLabel(st) {
-  const map = { state: '特殊状态', class: '平仓交易', class_pingcang: '平仓交易', class_zhanqi: '展期交易', class_jiaoge: '提前交割交易' }
+  const map = { state: '特殊状态', class: '平仓交易', class_kaicang: '开仓交易', class_pingcang: '平仓交易', class_zhanqi: '展期交易', class_jiaoge: '提前交割交易' }
   return map[st] || (st || '')
 }
 
@@ -866,6 +900,35 @@ const showCustomerDirection = computed(() => {
               </div>
             </template>
 
+            <!-- === lifecycle_status === -->
+            <template v-else-if="currentCategory() === 'lifecycle_status'">
+              <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px;">
+                <NTag v-for="kw in formatKeywords(item.keywords)" :key="kw" size="small" type="info" :bordered="false">
+                  {{ kw }}
+                </NTag>
+                <NText depth="3" style="margin: 0 2px;">—</NText>
+                <NBadge :value="parseRuleData(item.rule_data).value" type="warning" />
+                <NText depth="3" style="font-size: 11px;">
+                  ({{ lifecycleStatusLabel(parseRuleData(item.rule_data).value) }})
+                </NText>
+                <span style="flex:1;"></span>
+                <NText depth="3" style="font-size: 11px;">#{{ item.priority }}</NText>
+                <NTag :type="item.is_active !== false ? 'success' : 'default'" size="tiny">
+                  {{ item.is_active !== false ? '启用' : '禁用' }}
+                </NTag>
+                <NButton size="tiny" @click="openEdit(item)">编辑</NButton>
+                <NButton size="tiny" @click="toggleActive(item)">
+                  {{ item.is_active !== false ? '禁用' : '启用' }}
+                </NButton>
+                <NPopconfirm @positive-click="() => deleteItem(item)">
+                  <template #trigger>
+                    <NButton size="tiny" type="error">删除</NButton>
+                  </template>
+                  确定删除此规则？
+                </NPopconfirm>
+              </div>
+            </template>
+
             <!-- === time_expressions === -->
             <template v-else-if="currentCategory() === 'time_expressions'">
               <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px;">
@@ -1126,6 +1189,19 @@ const showCustomerDirection = computed(() => {
                 v-model:value="editingItem.mapped_value"
                 :options="mappedValueOptions"
                 placeholder="选择映射值"
+                style="margin-top:4px;"
+              />
+            </div>
+          </template>
+
+          <!-- === lifecycle_status fields === -->
+          <template v-if="currentCategory() === 'lifecycle_status'">
+            <div>
+              <NText strong style="font-size:12px;">生命周期状态 <NText type="error" style="font-size:10px;">*必填</NText></NText>
+              <NSelect
+                v-model:value="editingItem.mapped_value"
+                :options="lifecycleStatusValueOptions"
+                placeholder="选择生命周期状态"
                 style="margin-top:4px;"
               />
             </div>

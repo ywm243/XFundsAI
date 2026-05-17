@@ -8,7 +8,7 @@ export const COLUMN_LABELS = {
   BANKID: '机构ID',
   DIPNAME: '机构名称',
   CUSTNAME: '客户名称',
-  TOTAL_AMOUNT: '总交易量（万美元）',
+  TOTAL_AMOUNT: '交易量（万美元）',
   TRADE_COUNT: '总笔数',
   HEDGE_RATIO: '套保率',
   DERIVATIVE_AMOUNT: '衍生品交易量（万美元）',
@@ -53,10 +53,10 @@ export function formatCellValue(colName, rawValue) {
 }
 
 export const PRODUCT_TYPE_OPTIONS = [
-  { value: 'all', label: '全部' },
-  { value: 'spot', label: '即期' },
-  { value: 'fwd', label: '远期' },
-  { value: 'swap', label: '掉期' },
+  { value: 'all', label: '所有交易' },
+  { value: 'spot', label: '即期外汇' },
+  { value: 'fwd', label: '远期外汇' },
+  { value: 'swap', label: '外汇掉期' },
 ]
 
 export const BUY_SELL_OPTIONS = [
@@ -72,10 +72,10 @@ export const APP_ID_OPTIONS = [
 ]
 
 export const SPECIAL_STATES = [
-  { value: '1', label: '逾期' },
-  { value: '3', label: '展期' },
-  { value: '4', label: '提前交割' },
-  { value: '5', label: '平仓' },
+  { value: '0', label: '正常交易' },
+  { value: '1,2,6,7,10,11,15,17', label: '平仓' },
+  { value: '4,16', label: '提前交割' },
+  { value: '3,5,12,13', label: '展期' },
 ]
 
 export const DIMENSION_OPTIONS = [
@@ -85,3 +85,23 @@ export const DIMENSION_OPTIONS = [
   { value: 'manager', label: '客户经理ID' },
   { value: 'manager_name', label: '客户经理名称' },
 ]
+
+export const LIFECYCLE_STATUS_OPTIONS = [
+  { value: '', label: '不限' },
+  { value: 'not_due', label: '未到期' },
+  { value: 'overdue', label: '逾期' },
+  { value: 'due_today', label: '已到期' },
+  { value: 'unclosed', label: '未完结' },
+  { value: 'closed', label: '已完结' },
+]
+
+export function lifecycleStatusLabel(v) {
+  const map = {
+    not_due: '未到期',
+    overdue: '逾期',
+    due_today: '已到期',
+    unclosed: '未完结',
+    closed: '已完结',
+  }
+  return map[v] || ''
+}

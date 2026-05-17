@@ -7,9 +7,9 @@
       { "keywords": ["即期", "即期外汇"], "value": "spot", "meaning": "即期外汇交易" },
       { "keywords": ["远期", "远期外汇", "远期结售汇"], "value": "fwd", "meaning": "远期外汇交易" },
       { "keywords": ["掉期", "外汇掉期"], "value": "swap", "meaning": "外汇掉期交易" },
-      { "keywords": ["即期/远期", "即期和远期", "即远期"], "value": "all", "meaning": "即期和远期全部" }
+      { "keywords": ["所有交易", "全部交易", "全部"], "value": "all", "meaning": "所有交易" }
     ],
-    "default": null
+    "default": "all"
   },
 
   "buy_sell_direction": {
@@ -342,12 +342,12 @@
   },
 
   "special_states": {
-    "_description": "特殊状态映射 — 映射到数据库 SPECIALSTATE 字段。注意：'在途'不是SPECIALSTATE，'在途'=totaldelivery表剩余金额>0（未完结），可能表现为签约交易、展期远端、提前交割近端。",
+    "_description": "特殊状态映射 — 泛化关键词匹配所有子类。平仓/平盘→所有平仓子类，提前交割→所有提前交割子类，展期→所有展期子类，开仓/签约/正常交易→0。逾期/在途属于交易生命周期状态（lifecycle_status），不在special_states中。未指定则不加SPECIALSTATE条件。",
     "rules": [
-      { "keywords": ["逾期", "逾期交易", "已过期"], "field": "SPECIALSTATE", "value": "1", "meaning": "逾期状态" },
-      { "keywords": ["展期", "展期交易", "延期"], "field": "SPECIALSTATE", "value": "3", "meaning": "展期状态" },
-      { "keywords": ["提前交割", "提前交收"], "field": "SPECIALSTATE", "value": "4", "meaning": "提前交割状态" },
-      { "keywords": ["平仓", "已平仓"], "field": "SPECIALSTATE", "value": "5", "meaning": "平仓状态" }
+      { "keywords": ["平仓", "平盘", "已平仓"], "field": "SPECIALSTATE", "value": "1,2,6,7,10,11,15,17", "meaning": "所有平仓子类" },
+      { "keywords": ["提前交割", "提前交收"], "field": "SPECIALSTATE", "value": "4,16", "meaning": "所有提前交割子类" },
+      { "keywords": ["展期", "延期"], "field": "SPECIALSTATE", "value": "3,5,12,13", "meaning": "所有展期子类" },
+      { "keywords": ["开仓", "签约", "正常交易"], "field": "SPECIALSTATE", "value": "0", "meaning": "正常交易" }
     ],
     "default": null
   },

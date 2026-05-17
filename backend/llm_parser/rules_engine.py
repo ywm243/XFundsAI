@@ -153,15 +153,22 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
                         )
                         break
 
-    # ---- 阶段 1d: special_states 精确匹配 ----
-    state_rules = rules["special_states"]["rules"]
-    matched_states = []
-    for sr in state_rules:
-        if _has_keyword(original_text, sr["keywords"]):
-            matched_states.append(sr["value"])
-    if matched_states:
-        parsed["special_states"] = ",".join(matched_states)
-        overrides.append(f"special_states={parsed['special_states']}")
+    # ---- 阶段 1d: special_states 匹配（使用 parser 的泛化逻辑） ----
+    ss = _parser._parse_special_states(original_text)
+    if ss:
+        parsed["special_states"] = ss
+        overrides.append(f"special_states={ss}")
+
+    # ---- 阶段 1d1: lifecycle_status 匹配（使用 parser 的解析逻辑） ----
+    ls = _parser._parse_lifecycle_status(original_text)
+    if ls:
+        parsed["lifecycle_status"] = ls
+        overrides.append(f"lifecycle_status={ls}")
+        # 如果 lifecycle_status 被检测到，清除可能冲突的 special_states
+        # （"逾期"同时出现在 special_states 和 lifecycle_status 中）
+        if parsed.get("special_states"):
+            parsed["special_states"] = ""
+            overrides.append("special_states cleared (lifecycle_status takes priority)")
 
     # ---- 阶段 1d2: trade_class 匹配（使用 parser 的两遍匹配逻辑） ----
     tc = _parser._parse_trade_class(original_text)
@@ -176,6 +183,7 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
 
     # ---- 阶段 1e: product_type 精确匹配 ----
     product_rules = rules["product_type"]["rules"]
+    product_default = rules["product_type"].get("default", "all")
     matched_types = []
     for pr in product_rules:
         if _has_keyword(original_text, pr["keywords"]):
@@ -184,6 +192,8 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
         parsed["product_type"] = "all"
     elif len(matched_types) == 1:
         parsed["product_type"] = matched_types[0]
+    else:
+        parsed["product_type"] = product_default
 
     # ---- 阶段 1f: app_id 匹配（收集所有匹配项） ----
     appid_rules = rules["app_id"]["rules"]

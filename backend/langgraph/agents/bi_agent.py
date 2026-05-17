@@ -1,5 +1,7 @@
-# backend/langgraph/agents/bi_agent.py
-"""BI Agent sub-graph — parse, gatekeep, build SQL, execute, compare, format."""
+"""BI Agent sub-graph — parse, gatekeep, build SQL, execute, compare, format.
+
+Uses services layer instead of importing from app.py (fixes circular dependency).
+"""
 
 import logging
 from langgraph.graph import StateGraph
@@ -7,9 +9,13 @@ from llm_parser.parser import rule_based_parse, _rule_confidence, compute_compar
 from llm_parser.rules_engine import gatekeep
 from llm_parser.llm_client import llm_parse
 from llm_parser.prompt_builder import build_system_prompt
-from db.query_builder import TradeQueryBuilder
-from db.connection import get_db
 from langgraph.state import AgentState
+from services.sql_executor import execute_oracle
+from services.query_service import build_sql, build_comparison_sql
+from services.result_formatter import (
+    compute_comparison, merge_comparison_into_rows,
+    build_summary, build_chart_option, build_insights,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,92 +50,13 @@ def _node_parse(state: AgentState) -> dict:
 
 
 def _node_build_sql(state: AgentState) -> dict:
-    """Build SQL from parsed params using TradeQueryBuilder."""
+    """Build SQL from parsed params using query service."""
     parsed = state.parsed_params
     if not parsed or not parsed.get("product_type"):
         return {"sql": "", "sql_validated": False, "error": "Missing product_type in parsed params"}
 
-    product_type = parsed["product_type"]
-    buy_sell = parsed.get("buy_sell") or None
-    cust_name = parsed.get("cust_name") or None
-    special_states = parsed.get("special_states")
-    if isinstance(special_states, str) and special_states:
-        special_states = [s.strip() for s in special_states.split(",")]
-    else:
-        special_states = None
-
-    amount_filter = parsed.get("amount_filter")
-    top_n = parsed.get("top_n")
-
     try:
-        if amount_filter:
-            amt_op = amount_filter.get("amount_op")
-            amt_val = amount_filter.get("amount_value")
-            sql = TradeQueryBuilder.build_filtered_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                amount_op=amt_op,
-                amount_value=amt_val,
-                hedge_ratio=parsed.get("hedge_ratio", False),
-                dimension=parsed.get("dimension", "bank"),
-                cust_name=cust_name, appid=parsed.get("appid"),
-            )
-        elif top_n and top_n > 0:
-            sql = TradeQueryBuilder.build_ranking_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                amount_op=amt_op,
-                amount_value=amt_val,
-                hedge_ratio=parsed.get("hedge_ratio", False),
-                dimension=parsed.get("dimension", "bank"),
-                cust_name=cust_name, appid=parsed.get("appid"),
-            )
-        elif top_n and top_n > 0:
-            sql = TradeQueryBuilder.build_ranking_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                top_n=top_n, dimension=parsed.get("dimension", "bank"),
-                hedge_ratio=parsed.get("hedge_ratio", False),
-                cust_name=cust_name, appid=parsed.get("appid"),
-            )
-        elif parsed.get("hedge_ratio"):
-            sql = TradeQueryBuilder.build_hedge_ratio_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                dimension=parsed.get("dimension", "bank"),
-                cust_name=cust_name, appid=parsed.get("appid"),
-            )
-        elif parsed.get("aggregate"):
-            sql = TradeQueryBuilder.build_aggregate_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                cust_name=cust_name, appid=parsed.get("appid"),
-                dimension=parsed.get("dimension"),
-            )
-        else:
-            sql = TradeQueryBuilder.build_query(
-                product_type=product_type,
-                date_start=parsed.get("date_start") or None,
-                date_end=parsed.get("date_end") or None,
-                special_states=special_states, buy_sell=buy_sell,
-                bank_name=parsed.get("bank_name") or None,
-                cust_name=cust_name, appid=parsed.get("appid"),
-            )
+        sql = build_sql(parsed, date_start=parsed.get("date_start") or None, date_end=parsed.get("date_end") or None)
         return {"sql": sql, "sql_validated": True}
     except Exception as exc:
         logger.warning("build_sql failed: %s", exc)
@@ -142,13 +69,9 @@ def _node_execute(state: AgentState) -> dict:
         return {"columns": [], "rows": [], "row_count": 0}
 
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(state.sql)
-                cols = [desc[0] for desc in cur.description] if cur.description else []
-                rows = [list(row) for row in cur.fetchall()]
-                logger.info("bi_agent execute: %d rows, %d cols", len(rows), len(cols))
-                return {"columns": cols, "rows": rows, "row_count": len(rows)}
+        cols, rows = execute_oracle(state.sql)
+        logger.info("bi_agent execute: %d rows, %d cols", len(rows), len(cols))
+        return {"columns": cols, "rows": rows, "row_count": len(rows)}
     except Exception as exc:
         logger.warning("execute failed: %s", exc)
         return {"columns": [], "rows": [], "row_count": 0, "error": str(exc)}
@@ -174,33 +97,26 @@ def _node_build_comparison(state: AgentState) -> dict:
         return {}
 
     try:
-        # Build comparison SQL with shifted dates
-        from app import _build_comparison_sql, _compute_comparison, _merge_comparison_into_rows
-
-        cmp_sql = _build_comparison_sql(parsed, sql, cmp_start, cmp_end)
+        cmp_sql = build_comparison_sql(parsed, cmp_start, cmp_end)
         if not cmp_sql:
             return {}
 
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(cmp_sql)
-                cmp_cols = [desc[0] for desc in cur.description] if cur.description else []
-                cmp_rows = [list(row) for row in cur.fetchall()]
+        cmp_cols, cmp_rows = execute_oracle(cmp_sql)
 
         if not cmp_rows:
             return {}
 
-        comparison_data = _compute_comparison(
+        comparison_data = compute_comparison(
             current_rows=rows, compare_rows=cmp_rows,
             comparison=comparison,
             date_start=date_start, date_end=date_end,
             cmp_start=cmp_start, cmp_end=cmp_end,
+            cols=cmp_cols,
         )
 
-        # Merge per-row comparison data into columns
         if comparison_data and cmp_rows:
             cmp_label = comparison_data.get("label", "对比")
-            merged_cols, merged_rows = _merge_comparison_into_rows(
+            merged_cols, merged_rows = merge_comparison_into_rows(
                 rows, cmp_rows, state.columns, cmp_label
             )
             return {
@@ -217,17 +133,15 @@ def _node_build_comparison(state: AgentState) -> dict:
 
 def _node_format(state: AgentState) -> dict:
     """Format results into summary, chart_option, insights."""
-    from app import _build_summary, _build_chart_option, _build_insights
-
     if not state.rows or not state.columns:
         return {"summary": "", "chart_option": None, "insights": []}
 
-    summary = _build_summary(state.parsed_params, state.rows,
-                             state.columns, state.comparison)
-    chart_option = _build_chart_option(state.parsed_params, state.rows,
-                                       state.columns, state.comparison)
-    insights = _build_insights(state.parsed_params, state.rows,
-                               state.columns, state.comparison)
+    summary = build_summary(state.parsed_params, state.rows,
+                            state.columns, state.comparison)
+    chart_option = build_chart_option(state.parsed_params, state.rows,
+                                      state.columns, state.comparison)
+    insights = build_insights(state.parsed_params, state.rows,
+                              state.columns, state.comparison)
 
     return {"summary": summary, "chart_option": chart_option, "insights": insights}
 

@@ -99,6 +99,7 @@ def _build_base_prompt(rules: dict) -> str:
   "date_start": "YYYY-MM-DD 字符串，无则空字符串",
   "date_end": "YYYY-MM-DD 字符串，无则空字符串",
   "special_states": "逗号分隔的枚举值如 '0,1'，无则空字符串",
+  "lifecycle_status": "not_due" | "overdue" | "due_today" | "unclosed" | "closed" | "",
   "buy_sell": "B" | "S" | "",
   "bank_name": "银行名称字符串，无则空字符串",
   "cust_name": "客户名称字符串，无则空字符串",
@@ -127,7 +128,17 @@ def _build_base_prompt(rules: dict) -> str:
 {_render_special_states(rules["special_states"]["rules"])}
 注意：
 - 没有"挂账"状态，不要在 special_states 中使用 2
+- "逾期"不属于 SPECIALSTATE，而是交易生命周期状态（见下方 lifecycle_status）
 - "在途"不是 SPECIALSTATE 字段。"在途"=totaldelivery 表剩余金额>0（未完结），可能表现为签约交易、展期远端、提前交割近端
+
+## 交易生命周期状态（lifecycle_status）
+基于 XF_FX_TOTALDELIVERY 交割表和交易表的 MATURITYDATE 判断：
+- 未到期（not_due）：有未交割金额 且 到期日 > 系统日期
+- 逾期（overdue）：有未交割金额 且 到期日 < 系统日期
+- 已到期（due_today）：有未交割金额 且 到期日 = 系统日期
+- 未完结（unclosed）：未到期+逾期+已到期（有未交割金额）
+- 已完结（closed）：未交割金额 = 0（已全额交割）
+关键词含"逾期"→ lifecycle_status="overdue"，不是 special_states
 
 ## 特殊交易类别（SPECTRADECLASS）
 {_render_special_states(rules["trade_class"]["rules"])}
@@ -142,7 +153,7 @@ def _build_base_prompt(rules: dict) -> str:
 ## 在途交易
 - "在途"表示未完结交易：查询 totaldelivery 表 WHERE 剩余金额 > 0
 - 在途可能出现在：签约交易、展期远端、提前交割近端
-- "在途"不作为 special_states 参数，而是作为独立的查询条件
+- "在途"不作为 special_states 参数，对应 lifecycle_status="unclosed"
 
 ## 业务系统
 {_render_app_id(rules["app_id"]["rules"])}
