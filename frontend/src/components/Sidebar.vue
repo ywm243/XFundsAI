@@ -1,5 +1,6 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { getAuditLog } from '../api.js'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -8,6 +9,8 @@ const props = defineProps({
 
 const emit = defineEmits(['navigate', 'newChat', 'loadSession'])
 const expanded = ref(false)
+const auditExpanded = ref(false)
+const auditLogs = ref([])
 const activeAgent = ref('bi')
 
 const agents = [
@@ -18,7 +21,6 @@ const agents = [
 
 const sortedSessions = computed(() => {
   return [...props.sessions].sort((a, b) => {
-    // Current session first
     if (a.id === props.activeSession) return -1
     if (b.id === props.activeSession) return 1
     return (b.updated_at || '').localeCompare(a.updated_at || '')
@@ -32,10 +34,22 @@ function handleAgentClick(agent) {
 
 function handleHistoryClick() {
   expanded.value = !expanded.value
+  if (expanded.value) auditExpanded.value = false
+}
+
+async function handleAuditClick() {
+  auditExpanded.value = !auditExpanded.value
+  if (auditExpanded.value) {
+    expanded.value = false
+    try {
+      auditLogs.value = await getAuditLog('', 30)
+    } catch { auditLogs.value = [] }
+  }
 }
 
 function handleNewChat() {
   expanded.value = false
+  auditExpanded.value = false
   emit('newChat')
 }
 
@@ -46,6 +60,11 @@ function handleSelectSession(sid) {
 
 function handleAdminClick() {
   emit('navigate', 'admin')
+}
+
+function formatTime(ts) {
+  if (!ts) return ''
+  return ts.slice(5, 16).replace('T', ' ')
 }
 </script>
 
@@ -69,6 +88,10 @@ function handleAdminClick() {
       🕐
     </div>
 
+    <div class="sidebar-icon" title="审计日志" @click="handleAuditClick">
+      📋
+    </div>
+
     <div class="sidebar-icon" title="规则管理" @click="handleAdminClick">
       ⚙
     </div>
@@ -89,7 +112,25 @@ function handleAdminClick() {
           @click="handleSelectSession(s.id)"
         >
           <div class="session-title">{{ s.first_query || '(空会话)' }}</div>
-          <div class="session-meta">{{ s.turn_count }}轮 · {{ (s.updated_at || '').slice(5, 16) }}</div>
+          <div class="session-meta">{{ s.turn_count || 0 }}轮 · {{ (s.updated_at || '').slice(5, 16) }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="auditExpanded" class="sidebar-panel">
+      <div class="sidebar-panel-header">
+        <span class="sidebar-panel-title">审计日志</span>
+      </div>
+      <div v-if="auditLogs.length === 0" class="sidebar-panel-empty">
+        暂无审计记录
+      </div>
+      <div v-else class="session-list">
+        <div
+          v-for="log in auditLogs" :key="log.id"
+          class="session-item"
+        >
+          <div class="session-title">{{ log.raw_input || '(空)' }}</div>
+          <div class="session-meta">{{ log.result_rows || 0 }}行 · {{ formatTime(log.created_at) }}</div>
         </div>
       </div>
     </div>

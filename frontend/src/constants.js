@@ -13,13 +13,18 @@ export const COLUMN_LABELS = {
   HEDGE_RATIO: '套保率',
   DERIVATIVE_AMOUNT: '衍生品交易量（万美元）',
   DERIVATIVE_COUNT: '衍生品笔数',
+  BRANCH_PROFIT_USD: '分行利润(万美元)',
+  BRANCH_PROFIT_CNY: '分行利润(万元)',
+  CUSTOMER_PROFIT_USD: '客户损益(万美元)',
+  CUSTOMER_PROFIT_CNY: '客户损益(万元)',
   同比_CHANGE: '同比变化',
   环比_CHANGE: '环比变化',
 }
 
 export const COMPARISON_COLS = new Set(['同比_CHANGE', '环比_CHANGE'])
 
-export const AMOUNT_COLS = new Set(['USDAMOUNT', 'TOTAL_AMOUNT', 'DERIVATIVE_AMOUNT'])
+export const AMOUNT_COLS = new Set(['USDAMOUNT', 'TOTAL_AMOUNT', 'DERIVATIVE_AMOUNT',
+  'BRANCH_PROFIT_USD', 'BRANCH_PROFIT_CNY', 'CUSTOMER_PROFIT_USD', 'CUSTOMER_PROFIT_CNY'])
 
 export function formatCellValue(colName, rawValue) {
   if (rawValue == null || rawValue === '') {
@@ -105,3 +110,10 @@ export function lifecycleStatusLabel(v) {
   }
   return map[v] || ''
 }
+
+export const PROFIT_TYPE_OPTIONS = [
+  { value: 'branch_profit_usd', label: '分行利润(美元)' },
+  { value: 'branch_profit_cny', label: '分行利润(人民币)' },
+  { value: 'customer_profit_usd', label: '客户损益(美元)' },
+  { value: 'customer_profit_cny', label: '客户损益(人民币)' },
+]
