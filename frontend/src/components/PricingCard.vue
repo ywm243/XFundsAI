@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { NCard, NButton, NSpace, NTag, NDivider } from 'naive-ui'
+import { formatCellValue } from '../constants.js'
 import QuoteCountdown from './QuoteCountdown.vue'
 import RiskDisclosure from './RiskDisclosure.vue'
 import ScenarioCompare from './ScenarioCompare.vue'
@@ -27,7 +28,29 @@ function productLabel(p) {
   return map[p] || p
 }
 
+function formatAmountChinese(val) {
+  if (!val) return ''
+  const digits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
+  const units = ['', '拾', '佰', '仟', '万', '拾万', '佰万', '仟万', '亿']
+  const s = String(Math.floor(Number(val)))
+  let result = ''
+  for (let i = 0; i < s.length; i++) {
+    const d = parseInt(s[i])
+    if (d !== 0) {
+      result += digits[d] + units[s.length - 1 - i]
+    } else if (result && !result.endsWith('零')) {
+      result += '零'
+    }
+  }
+  return result.replace(/零$/, '') + '元整'
+}
+
 // Computed
+const isBilateral = computed(() => {
+  const quotes = props.data.quotes
+  return quotes?.length === 2 && !props.data.intent_params?.direction
+})
+
 const isPricingMode = computed(() => {
   const m = props.data.mode || ''
   return m.startsWith('pricing_') || m === 'trade_success' || m === 'trade_failed'
@@ -64,6 +87,11 @@ function onExpired() {
 
 <template>
   <div v-if="isPricingMode" class="pricing-container">
+    <!-- Sandbox banner (规则2) -->
+    <div v-if="data.sandbox_mode" class="sandbox-banner">
+      模拟询价 — 体验流程，不做实际交易
+    </div>
+
     <!-- Compare / Scenario mode: show ScenarioCompare -->
     <ScenarioCompare
       v-if="isCompare || isScenario"
@@ -73,56 +101,127 @@ function onExpired() {
 
     <!-- Single / Multi quote mode: render NCard per quote -->
     <template v-else>
-      <NCard
-        v-for="(quote, idx) in data.quotes"
-        :key="quote.quote_id || idx"
-        class="quote-card"
-        size="small"
-      >
-        <!-- Header: currency pair + product tag -->
-        <div class="quote-header">
-          <span class="quote-pair">{{ quote.currency_pair }}</span>
-          <NTag size="small" :bordered="false">
-            {{ productLabel(quote.product_type) }}{{ directionLabel(quote.direction) }}
-          </NTag>
-        </div>
-
-        <NDivider style="margin: 8px 0" />
-
-        <!-- Rate display -->
-        <div class="quote-rate">{{ quote.customer_rate }}</div>
-
-        <!-- Meta info -->
-        <div class="quote-meta">
-          <span>点差：{{ quote.spread_bp }}bp</span>
-          <span v-if="quote.value_date">交割日：{{ quote.value_date }}</span>
-        </div>
-
-        <!-- Countdown -->
-        <QuoteCountdown
-          v-if="data.valid_until"
-          :valid-until="data.valid_until"
-          @expired="onExpired"
-        />
-
-        <!-- Action buttons -->
-        <NSpace justify="end" style="margin-top: 12px">
-          <NButton size="small" @click="emit('cancel', data.pricing_id)">
-            取消
-          </NButton>
-          <NButton size="small" @click="emit('refresh', data.pricing_id)">
-            刷新
-          </NButton>
-          <NButton
-            v-if="isDirectTrade || data.show_trade_button"
+      <!-- Bilateral layout (规则4): side by side when no direction specified -->
+      <template v-if="isBilateral">
+        <div class="bilateral-row">
+          <NCard
+            v-for="(quote, idx) in data.quotes"
+            :key="quote.quote_id || idx"
             size="small"
-            type="error"
-            @click="handleTradeClick"
+            class="bilateral-card"
           >
-            确认交易
-          </NButton>
-        </NSpace>
-      </NCard>
+            <!-- Header: currency pair + product tag -->
+            <div class="quote-header">
+              <span class="quote-pair">{{ quote.currency_pair }}</span>
+              <NTag size="small" :bordered="false">
+                {{ productLabel(quote.product_type) }}{{ directionLabel(quote.direction) }}
+              </NTag>
+            </div>
+
+            <NDivider style="margin: 8px 0" />
+
+            <!-- Rate display -->
+            <div class="quote-rate">{{ quote.customer_rate }}</div>
+
+            <!-- Meta info -->
+            <div class="quote-meta">
+              <span>点差：{{ quote.spread_bp }}bp</span>
+              <span v-if="quote.value_date">交割日：{{ quote.value_date }}</span>
+              <span v-if="quote.discount_bp" class="discount-badge">已享优惠 {{ quote.discount_bp }}bp</span>
+            </div>
+
+            <!-- Amount with Chinese format (规则5) -->
+            <div v-if="quote.notional_amount" class="chinese-amount">
+              {{ formatAmountChinese(quote.notional_amount) }}
+            </div>
+
+            <!-- Countdown -->
+            <QuoteCountdown
+              v-if="data.valid_until"
+              :valid-until="data.valid_until"
+              @expired="onExpired"
+            />
+
+            <!-- Action buttons -->
+            <NSpace justify="end" style="margin-top: 12px">
+              <NButton size="small" @click="emit('cancel', data.pricing_id)">
+                取消
+              </NButton>
+              <NButton size="small" @click="emit('refresh', data.pricing_id)">
+                刷新
+              </NButton>
+              <NButton
+                v-if="isDirectTrade || data.show_trade_button"
+                size="small"
+                type="error"
+                @click="handleTradeClick"
+              >
+                确认交易
+              </NButton>
+            </NSpace>
+          </NCard>
+        </div>
+      </template>
+
+      <!-- Single layout: stacked cards -->
+      <template v-else>
+        <NCard
+          v-for="(quote, idx) in data.quotes"
+          :key="quote.quote_id || idx"
+          class="quote-card"
+          size="small"
+        >
+          <!-- Header: currency pair + product tag -->
+          <div class="quote-header">
+            <span class="quote-pair">{{ quote.currency_pair }}</span>
+            <NTag size="small" :bordered="false">
+              {{ productLabel(quote.product_type) }}{{ directionLabel(quote.direction) }}
+            </NTag>
+          </div>
+
+          <NDivider style="margin: 8px 0" />
+
+          <!-- Rate display -->
+          <div class="quote-rate">{{ quote.customer_rate }}</div>
+
+          <!-- Meta info -->
+          <div class="quote-meta">
+            <span>点差：{{ quote.spread_bp }}bp</span>
+            <span v-if="quote.value_date">交割日：{{ quote.value_date }}</span>
+            <span v-if="quote.discount_bp" class="discount-badge">已享优惠 {{ quote.discount_bp }}bp</span>
+          </div>
+
+          <!-- Amount with Chinese format (规则5) -->
+          <div v-if="quote.notional_amount" class="chinese-amount">
+            {{ formatAmountChinese(quote.notional_amount) }}
+          </div>
+
+          <!-- Countdown -->
+          <QuoteCountdown
+            v-if="data.valid_until"
+            :valid-until="data.valid_until"
+            @expired="onExpired"
+          />
+
+          <!-- Action buttons -->
+          <NSpace justify="end" style="margin-top: 12px">
+            <NButton size="small" @click="emit('cancel', data.pricing_id)">
+              取消
+            </NButton>
+            <NButton size="small" @click="emit('refresh', data.pricing_id)">
+              刷新
+            </NButton>
+            <NButton
+              v-if="isDirectTrade || data.show_trade_button"
+              size="small"
+              type="error"
+              @click="handleTradeClick"
+            >
+              确认交易
+            </NButton>
+          </NSpace>
+        </NCard>
+      </template>
     </template>
 
     <!-- Insights panel -->
@@ -157,6 +256,50 @@ function onExpired() {
 <style scoped>
 .pricing-container {
   max-width: 520px;
+}
+
+/* Sandbox banner */
+.sandbox-banner {
+  padding: 8px 16px;
+  margin-bottom: 12px;
+  background: #e3f2fd;
+  border: 1px solid #90caf9;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1565c0;
+  text-align: center;
+}
+
+/* Bilateral row */
+.bilateral-row {
+  display: flex;
+  gap: 12px;
+}
+
+.bilateral-card {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Discount badge */
+.discount-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Chinese amount */
+.chinese-amount {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
 }
 
 .quote-card {

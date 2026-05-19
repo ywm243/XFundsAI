@@ -35,6 +35,12 @@ const rows = computed(() =>
   <div class="compare-table">
     <h4 class="compare-title">{{ data.scenario_name || '报价对比' }}</h4>
     <NDataTable :columns="columns" :data="rows" size="small" />
+    <div class="scenario-disclaimer">
+      模拟结果，不代表实际盈亏。实际成交价格以询价接口返回为准。
+    </div>
+    <div class="scenario-source" v-if="data.data_source">
+      数据来源：{{ data.data_source }}
+    </div>
   </div>
 </template>
 
@@ -47,5 +53,24 @@ const rows = computed(() =>
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 8px;
+}
+
+.scenario-disclaimer {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #fff3e0;
+  border: 1px solid #ffcc02;
+  border-left: 4px solid #e65100;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #bf360c;
+  font-weight: 500;
+}
+
+.scenario-source {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
 }
 </style>
