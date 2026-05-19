@@ -1,6 +1,5 @@
 import logging
 import os
-import oracledb
 from contextlib import contextmanager
 from .config import DBConfig
 
@@ -11,7 +10,7 @@ os.environ.setdefault("NLS_LANG", "AMERICAN_AMERICA.AL32UTF8")
 
 import platform
 if platform.system() == "Windows":
-    IC_DIR = r"C:\instantclient_19_30"
+    IC_DIR = r"D:\soft\instantclient\instantclient_19_19"
 else:
     IC_DIR = "/home/ywm/oracle/instantclient_21_12"
 _config = DBConfig()
@@ -39,6 +38,14 @@ def _ensure_oracle() -> None:
         raise RuntimeError(_oracle_error)
 
     try:
+        # Thick mode: required for older Oracle DB versions (thin mode unsupported)
+        # Set DLL search path BEFORE importing oracledb to ensure oci.dll is found
+        if platform.system() == "Windows":
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW(IC_DIR)
+        else:
+            os.environ["LD_LIBRARY_PATH"] = IC_DIR + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+        import oracledb
         oracledb.init_oracle_client(lib_dir=IC_DIR)
         global _pool
         _pool = oracledb.create_pool(
@@ -51,12 +58,12 @@ def _ensure_oracle() -> None:
             session_callback=_session_callback,
         )
         _oracle_ready = True
-        logger.info("Oracle client + pool initialized: %s (min=1, max=10)", IC_DIR)
+        logger.info("Oracle thick pool initialized: %s (min=1, max=10, lib=%s)", _config.dsn, IC_DIR)
     except oracledb.Error as e:
         _oracle_error = str(e)
         raise RuntimeError(
-            f"Oracle Instant Client init failed: {e}\n"
-            f"IC_DIR={IC_DIR}"
+            f"Oracle pool init failed: {e}\n"
+            f"DSN={_config.dsn}, IC_DIR={IC_DIR}"
         ) from e
 
 

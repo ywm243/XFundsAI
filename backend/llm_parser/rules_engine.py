@@ -99,14 +99,6 @@ def _load_rules() -> dict:
     return _rules_cache
 
 
-def reload_rules() -> None:
-    """Clear cache so next request reloads from MySQL."""
-    global _rules_cache
-    _rules_cache = None
-    mysql_store.init_db()
-    logger.info("Rules engine cache cleared, will reload from MySQL on next request")
-
-
 def _has_keyword(text: str, keywords: list[str]) -> bool:
     return any(kw in text for kw in keywords)
 
@@ -250,6 +242,13 @@ def gatekeep(parsed: dict, original_text: str) -> dict:
     # ---- 套保率检测 ----
     if "套保率" in original_text:
         parsed["hedge_ratio"] = True
+
+    # ---- 利润检测 ----
+    if not parsed.get("profit_type"):
+        profit = _parser._parse_profit_type(original_text)
+        if profit:
+            parsed["profit_type"] = profit
+            overrides.append(f"profit_type={profit}")
 
     # ---- TopN 回退 ----
     if parsed.get("top_n") is None:

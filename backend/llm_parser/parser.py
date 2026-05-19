@@ -211,21 +211,29 @@ def _parse_bank_name(text: str) -> str:
       - XX分行/支行/分公司/营业部  → 北京分公司
       - XX银行XX分行       → 中国银行北京分行
     """
+    # Strip profit keywords that can be confused with institution suffixes
+    cleaned = text
+    profit_suffixes = ["分行利润", "分行损益", "分行收入", "分行支出", "分行盈利",
+                       "分行亏损", "分行中收", "客户损益", "客户利润", "客户亏损",
+                       "客户盈利", "客户收入", "客户支出"]
+    for suffix in sorted(profit_suffixes, key=len, reverse=True):
+        cleaned = cleaned.replace(suffix, "")
+
     # Full match: "XX银行XX分行/支行"
     m = re.search(
         r"([一-鿿]{2,}(?:银行|公司))([一-鿿]{2,}(?:分行|支行|分公司|营业部))",
-        text,
+        cleaned,
     )
     if m:
         return m.group(0)
 
     # Bank name: "XX银行"
-    m = re.search(r"([一-鿿]{2,}银行)", text)
+    m = re.search(r"([一-鿿]{2,}银行)", cleaned)
     if m:
         return m.group(1)
 
     # Branch name: "XX分行/支行/分公司/营业部"
-    m = re.search(r"([一-鿿]{2,}(?:分行|支行|分公司|营业部))", text)
+    m = re.search(r"([一-鿿]{2,}(?:分行|支行|分公司|营业部))", cleaned)
     if m:
         return m.group(1)
 
@@ -437,6 +445,49 @@ def _parse_hedge_ratio(text: str) -> bool:
     return "套保率" in text
 
 
+def _parse_profit_type(text: str) -> list[str]:
+    """Detect profit metrics from query text.
+
+    Returns list of metric keys: branch_profit_usd, branch_profit_cny,
+    customer_profit_usd, customer_profit_cny. Empty list = no profit query.
+    """
+    branch_kw = ["分行损益", "分行收入", "分行支出", "分行盈利", "分行亏损", "分行中收", "分行利润"]
+    customer_kw = ["客户损益", "客户利润", "客户亏损", "客户盈利", "客户收入", "客户支出"]
+    general_kw = ["损益", "利润", "盈利", "亏损", "中收"]
+
+    has_branch = any(kw in text for kw in branch_kw)
+    has_customer = any(kw in text for kw in customer_kw)
+
+    # General keywords default to branch unless "客户" context
+    if not has_branch and not has_customer:
+        if any(kw in text for kw in general_kw):
+            has_branch = True
+            # If text mentions "客户" near profit keywords, treat as customer profit
+            if "客户" in text:
+                has_customer = True
+
+    if not has_branch and not has_customer:
+        return []
+
+    # Currency detection
+    has_usd = "美元" in text or "USD" in text.upper()
+    has_cny = "人民币" in text or "CNY" in text.upper()
+
+    metrics = []
+    if has_branch:
+        if has_cny:
+            metrics.append("branch_profit_cny")
+        if has_usd or not has_cny:
+            metrics.append("branch_profit_usd")
+    if has_customer:
+        if has_cny:
+            metrics.append("customer_profit_cny")
+        if has_usd or not has_cny:
+            metrics.append("customer_profit_usd")
+
+    return metrics
+
+
 def _parse_amount_filter(text: str) -> Optional[dict]:
     """Extract amount filter condition from query text.
 
@@ -497,9 +548,16 @@ def _parse_cust_name(text: str) -> str:
     例如：
       "测试客户的套保率"  → "测试客户"
       "小鱼儿的套保率"    → "小鱼儿"
+
+    注意："客户损益"、"客户利润"等利润关键词中的"客户"不是客户名称。
     """
+    # Strip profit keywords where "客户" is part of a compound term, not a name
+    cleaned = text
+    for kw in ["客户损益", "客户利润", "客户亏损", "客户盈利", "客户收入", "客户支出"]:
+        cleaned = cleaned.replace(kw, "")
+
     # Pattern 1: "XX客户"
-    m = re.search(r"([一-鿿a-zA-Z0-9]{1,})客户", text)
+    m = re.search(r"([一-鿿a-zA-Z0-9]{1,})客户", cleaned)
     if m:
         name = m.group(1) + "客户"
         # 去掉时间前缀干扰（如 "今年测试客户" → "测试客户"）
@@ -621,8 +679,11 @@ def rule_based_parse(text: str) -> dict:
         dimension = "customer"
         bank_name = ""
     elif dimension == "customer":
-        # When query is customer-oriented, bank name filter should not apply
-        bank_name = ""
+        # When query is customer-oriented, keep bank_name for profit queries
+        # (e.g. "浙江分公司客户损益" needs both dimension=customer and bank_name filter)
+        profit_metrics = _parse_profit_type(text)
+        if not profit_metrics:
+            bank_name = ""
 
     # 结售汇相关词 → 自动设置 appid=2
     is_jieshouhui = any(kw in text for kw in ["结汇", "购汇", "售汇", "结售汇", "近购远结", "近售远结", "近结远购", "近结远售"])
@@ -654,6 +715,7 @@ def rule_based_parse(text: str) -> dict:
         "hedge_ratio": _parse_hedge_ratio(text),
         "appid": appid,
         "comparison": _parse_comparison_modifier(text),
+        "profit_type": _parse_profit_type(text),
     }
 
 

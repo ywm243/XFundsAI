@@ -10,9 +10,12 @@ from llm_parser.rules_engine import load_dimension_config
 
 logger = logging.getLogger(__name__)
 
-_dimension_config = load_dimension_config()
-_AMOUNT_COL_NAMES = _dimension_config.get("amount_col_names", {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"})
-_LABEL_COL_NAMES = _dimension_config.get("label_col_names", {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"})
+
+def _get_dimension_config():
+    return load_dimension_config()
+
+
+_PROFIT_COL_NAMES = {"BRANCH_PROFIT_USD", "BRANCH_PROFIT_CNY", "CUSTOMER_PROFIT_USD", "CUSTOMER_PROFIT_CNY"}
 
 _LIFECYCLE_LABELS = {
     "not_due": "未到期",
@@ -30,8 +33,21 @@ _SPECIAL_STATE_LABELS = [
 ]
 
 
+_PROFIT_LABELS = {
+    "branch_profit_usd": "分行利润(美元)",
+    "branch_profit_cny": "分行利润(人民币)",
+    "customer_profit_usd": "客户损益(美元)",
+    "customer_profit_cny": "客户损益(人民币)",
+}
+
+
 def _metric_label(parsed: dict) -> str:
-    """Return the display label for the queried metric, accounting for lifecycle/special states."""
+    """Return the display label for the queried metric, accounting for profit/lifecycle/special states."""
+    profit_type = parsed.get("profit_type", [])
+    if profit_type:
+        labels = [_PROFIT_LABELS.get(k, k) for k in profit_type]
+        return "+".join(labels)
+
     lc = parsed.get("lifecycle_status", "")
     if lc in _LIFECYCLE_LABELS:
         return f"{_LIFECYCLE_LABELS[lc]}交易量"
@@ -50,18 +66,28 @@ def _metric_label(parsed: dict) -> str:
     return "交易量"
 
 
+def _amount_col_names():
+    return _get_dimension_config().get("amount_col_names", {"USDAMOUNT", "TOTAL_AMOUNT", "DERIVATIVE_AMOUNT"}) | _PROFIT_COL_NAMES
+
+
+def _label_col_names():
+    return _get_dimension_config().get("label_col_names", {"DIPNAME", "BANKNAME", "银行", "客户经理", "CUSTMANAGERNAME"})
+
+
 def find_amount_col(cols: list) -> int:
     """Find the index of the numeric amount column."""
+    acn = _amount_col_names()
     for i, c in enumerate(cols):
-        if c.upper() in _AMOUNT_COL_NAMES:
+        if c.upper() in acn:
             return i
     return 0
 
 
 def find_label_col(cols: list) -> int:
     """Find the index of the label/dimension column (bank name, etc.)."""
+    lcn = _label_col_names()
     for i, c in enumerate(cols):
-        if c.upper() in _LABEL_COL_NAMES:
+        if c.upper() in lcn:
             return i
     return 0
 
@@ -73,7 +99,7 @@ def compute_comparison(current_rows, compare_rows, comparison, date_start, date_
     compare_amount, date_start, date_end, cmp_start, cmp_end.
     """
     amt_idx = find_amount_col(cols) if cols else 0
-    label_map = _dimension_config.get("comparison_labels", {"yoy": "同比", "mom": "环比"})
+    label_map = _get_dimension_config().get("comparison_labels", {"yoy": "同比", "mom": "环比"})
     total_current = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in current_rows) if current_rows else 0
     total_compare = sum(float(r[amt_idx] if isinstance(r, (list, tuple)) and r[amt_idx] is not None else 0) for r in compare_rows) if compare_rows else 0
 
@@ -146,23 +172,66 @@ def build_summary(parsed: dict, rows: list, cols: list, comparison: dict | None)
     if not rows or not cols:
         return ""
 
-    amt_idx = find_amount_col(cols)
     date_start = parsed.get("date_start", "") or ""
     date_end = parsed.get("date_end", "") or ""
     bank_name = (parsed.get("bank_name") or "")
 
+    parts = [f"{date_start} ~ {date_end}"]
+    if bank_name:
+        parts.append(f"{bank_name}")
+
+    # Profit metrics summary
+    profit_type = parsed.get("profit_type", [])
+    if profit_type:
+        dim = parsed.get("dimension", "bank")
+        dimensions_cfg = _get_dimension_config().get("dimensions", {})
+        dim_info = dimensions_cfg.get(dim, {})
+        dim_label = dim_info.get("display_label", "机构")
+        count_unit = dim_info.get("count_unit", "家")
+        total_count = len(rows)
+        if not (bank_name and total_count == 1):
+            parts.append(f"共{total_count}{count_unit}{dim_label}")
+
+        # Find each profit column and summarize
+        for metric_key in profit_type:
+            alias = {"branch_profit_usd": "BRANCH_PROFIT_USD", "branch_profit_cny": "BRANCH_PROFIT_CNY",
+                     "customer_profit_usd": "CUSTOMER_PROFIT_USD", "customer_profit_cny": "CUSTOMER_PROFIT_CNY"}.get(metric_key, "")
+            if alias and alias in [c.upper() for c in cols]:
+                col_idx = [c.upper() for c in cols].index(alias)
+                total = sum(float(r[col_idx]) for r in rows if r and len(r) > col_idx and r[col_idx] is not None)
+                label = _PROFIT_LABELS.get(metric_key, metric_key)
+                unit = "万元" if "CNY" in metric_key else "万美元"
+                parts.append(f"{label}{total/10000:,.2f}{unit}")
+
+        # Also include trade volume if present
+        if "TOTAL_AMOUNT" in [c.upper() for c in cols]:
+            amt_idx = [c.upper() for c in cols].index("TOTAL_AMOUNT")
+            total_amt = sum(float(r[amt_idx]) for r in rows if r and len(r) > amt_idx and r[amt_idx] is not None)
+            parts.append(f"交易量{total_amt/10000:,.2f}万美元")
+
+        # Add comparison info for profit queries
+        if comparison:
+            cmp_label = comparison.get("label", "")
+            rate = comparison.get("change_rate")
+            direction = "增长" if (comparison.get("change_amount") or 0) >= 0 else "下降"
+            amt = abs(comparison.get("change_amount", 0) or 0) / 10000
+            if rate is not None:
+                parts.append(f"{cmp_label}{direction}{amt:,.2f}万美元（{rate:+.2f}%）")
+            else:
+                parts.append(f"{cmp_label}{direction}{amt:,.2f}万美元")
+
+        return "，".join(parts) + "。"
+
+    # Original volume-only summary
+    amt_idx = find_amount_col(cols)
     total_usd = sum(float(r[amt_idx]) for r in rows if r and r[amt_idx] is not None) / 10000 if rows else 0
     total_count = len(rows)
 
     dim = parsed.get("dimension", "bank")
-    dimensions_cfg = _dimension_config.get("dimensions", {})
+    dimensions_cfg = _get_dimension_config().get("dimensions", {})
     dim_info = dimensions_cfg.get(dim, {})
     dim_label = dim_info.get("display_label", "机构")
     count_unit = dim_info.get("count_unit", "家")
-
-    parts = [f"{date_start} ~ {date_end}"]
-    if bank_name:
-        parts.append(f"{bank_name}")
 
     if parsed.get("aggregate"):
         if not (bank_name and total_count == 1):
@@ -190,8 +259,8 @@ def build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | 
     if not rows or not cols:
         return None
 
-    amt_idx = find_amount_col(cols)
     label_idx = find_label_col(cols)
+    cols_upper = [c.upper() for c in cols]
 
     bank_name = (parsed.get("bank_name") or "").strip() or "全市场"
     metric = _metric_label(parsed)
@@ -202,9 +271,41 @@ def build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | 
         title_parts.append(f"（{date_start} ~ {date_end}）")
 
     x_data = [str(r[label_idx]) if r else "" for r in rows]
-    series_data = [float(r[amt_idx]) if r and r[amt_idx] is not None else 0 for r in rows]
 
-    series = [{"name": metric, "type": "bar", "data": series_data, "itemStyle": {"color": "#3b82f6"}}]
+    # Multi-metric chart for profit queries
+    profit_type = parsed.get("profit_type", [])
+    chart_colors = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6"]
+    series = []
+
+    if profit_type:
+        for i, metric_key in enumerate(profit_type):
+            alias = {"branch_profit_usd": "BRANCH_PROFIT_USD", "branch_profit_cny": "BRANCH_PROFIT_CNY",
+                     "customer_profit_usd": "CUSTOMER_PROFIT_USD", "customer_profit_cny": "CUSTOMER_PROFIT_CNY"}.get(metric_key, "")
+            if alias and alias in cols_upper:
+                col_idx = cols_upper.index(alias)
+                data = [float(r[col_idx]) / 10000 if r and len(r) > col_idx and r[col_idx] is not None else 0 for r in rows]
+                series.append({
+                    "name": _PROFIT_LABELS.get(metric_key, metric_key),
+                    "type": "bar",
+                    "data": data,
+                    "itemStyle": {"color": chart_colors[i % len(chart_colors)]},
+                })
+
+        # Add trade volume if present
+        if "TOTAL_AMOUNT" in cols_upper:
+            vol_idx = cols_upper.index("TOTAL_AMOUNT")
+            data = [float(r[vol_idx]) / 10000 if r and len(r) > vol_idx and r[vol_idx] is not None else 0 for r in rows]
+            series.append({
+                "name": "交易量(万美元)",
+                "type": "bar",
+                "data": data,
+                "itemStyle": {"color": chart_colors[len(profit_type) % len(chart_colors)]},
+            })
+    else:
+        # Single-metric chart (original logic)
+        amt_idx = find_amount_col(cols)
+        series_data = [float(r[amt_idx]) if r and r[amt_idx] is not None else 0 for r in rows]
+        series = [{"name": metric, "type": "bar", "data": series_data, "itemStyle": {"color": "#3b82f6"}}]
 
     if comparison:
         cmp_label = comparison.get("label", "对比")
@@ -212,7 +313,7 @@ def build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | 
         series.append({
             "name": cmp_label,
             "type": "bar",
-            "data": [round(cmp_amt, 2)] * len(series_data),
+            "data": [round(cmp_amt, 2)] * len(x_data),
             "itemStyle": {"color": "#94a3b8"},
         })
 
@@ -221,7 +322,7 @@ def build_chart_option(parsed: dict, rows: list, cols: list, comparison: dict | 
         "tooltip": {"trigger": "axis"},
         "legend": {"data": [s["name"] for s in series], "bottom": 0},
         "xAxis": {"type": "category", "data": x_data, "axisLabel": {"rotate": 30}},
-        "yAxis": {"type": "value", "name": "万美元"},
+        "yAxis": {"type": "value", "name": "万"},
         "series": series,
         "grid": {"left": 60, "right": 20, "bottom": 40, "top": 40},
     }

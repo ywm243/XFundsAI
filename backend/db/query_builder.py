@@ -14,7 +14,7 @@ class TradeQueryBuilder:
         "swap": "XF_FX_SWAPTRADE_VIEW",
     }
 
-    COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME", "DOWNLOADKEY"]
+    COMMON_FIELDS = ["USDAMOUNT", "TRADEDATE", "TRADESTATUS", "SPECIALSTATE", "APPID", "BUYORSELL", "BANKID", "CUSTNAME", "CUSTOMERID", "CUSTMAINMANAGER", "CUSTMANAGERNAME", "DOWNLOADKEY", "DOWNLOADKEYINT"]
 
     @staticmethod
     def _validate_buy_sell(buy_sell):
@@ -333,7 +333,6 @@ class TradeQueryBuilder:
 
         where_clause = "\n  AND ".join(conditions)
         select_col, group_col = cls._group_cols(dimension)
-        join = cls._join_clause(dimension, bank_name)
 
         if hedge_ratio:
             inner_select = (
@@ -411,7 +410,6 @@ class TradeQueryBuilder:
                 having_clause = f"HAVING SUM(t.USDAMOUNT) {op} {amount_value}"
 
         select_col, group_col = cls._group_cols(dimension)
-        join = cls._join_clause(dimension, bank_name)
 
         if hedge_ratio:
             inner_select = (
@@ -513,3 +511,220 @@ class TradeQueryBuilder:
                 conditions.append(f"{nd2} = 0")
 
         return join, conditions
+
+    # ---- Profit query helpers ----
+
+    PROFIT_METRICS = {
+        "branch_profit_usd": {
+            "profit_state": 0, "group_type": 0, "profitcycode": "USD",
+            "join_key": "DOWNLOADKEYINT", "alias": "BRANCH_PROFIT_USD",
+            "label": "分行利润(美元)",
+        },
+        "branch_profit_cny": {
+            "profit_state": 0, "group_type": 0, "profitcycode": "CNY",
+            "join_key": "DOWNLOADKEYINT", "alias": "BRANCH_PROFIT_CNY",
+            "label": "分行利润(人民币)",
+        },
+        "customer_profit_usd": {
+            "profit_state": 2, "group_type": 0, "profitcycode": "USD",
+            "join_key": "DOWNLOADKEY", "alias": "CUSTOMER_PROFIT_USD",
+            "label": "客户损益(美元)",
+        },
+        "customer_profit_cny": {
+            "profit_state": 2, "group_type": 0, "profitcycode": "CNY",
+            "join_key": "DOWNLOADKEY", "alias": "CUSTOMER_PROFIT_CNY",
+            "label": "客户损益(人民币)",
+        },
+    }
+
+    @classmethod
+    def _build_profit_join(cls, profit_type: list[str],
+                           date_start: str | None = None,
+                           date_end: str | None = None) -> tuple[str, list[str]]:
+        """Build JOIN clause and CASE expressions for profit metrics.
+
+        Returns (join_sql, case_exprs).
+        """
+        has_branch = any(k.startswith("branch_") for k in profit_type)
+        has_customer = any(k.startswith("customer_") for k in profit_type)
+
+        if has_branch and has_customer:
+            join_on = "(p.DOWNLOADKEY = t.DOWNLOADKEYINT OR p.DOWNLOADKEY = t.DOWNLOADKEY)"
+        elif has_branch:
+            join_on = "p.DOWNLOADKEY = t.DOWNLOADKEYINT"
+        else:
+            join_on = "p.DOWNLOADKEY = t.DOWNLOADKEY"
+
+        join = f"LEFT JOIN XF_FX_PROFIT p ON {join_on}"
+
+        case_exprs = []
+        for metric_key in profit_type:
+            m = cls.PROFIT_METRICS[metric_key]
+            conditions = [
+                f"p.PROFITSTATE={m['profit_state']}",
+                f"p.GROUPTYPE={m['group_type']}",
+                f"p.PROFITCYCODE='{m['profitcycode']}'",
+                "p.TRADESTATUS=0",
+                "p.APPID IN (1,2)",
+            ]
+            if date_start is not None:
+                conditions.append(f"p.TRADEDATE>={int(date_start.replace('-', ''))}")
+            if date_end is not None:
+                conditions.append(f"p.TRADEDATE<={int(date_end.replace('-', ''))}")
+            cond_sql = " AND ".join(conditions)
+            case_exprs.append(
+                f"SUM(CASE WHEN {cond_sql} "
+                f"THEN p.PROFITAMT ELSE 0 END) as {m['alias']}"
+            )
+
+        return join, case_exprs
+
+    @classmethod
+    def build_profit_query(cls, profit_type: list[str], product_type: str = "all",
+                           date_start: str | None = None, date_end: str | None = None,
+                           special_states=None, buy_sell: str | None = None,
+                           bank_name: str | None = None, cust_name: str | None = None,
+                           appid=None, dimension: str | None = None,
+                           top_n: int | None = None, amount_op: str | None = None,
+                           amount_value: float | None = None) -> str:
+        """Build a profit-only query joining trade views to XF_FX_PROFIT."""
+        cls._validate_product_type(product_type)
+        cls._validate_buy_sell(buy_sell)
+
+        cte, bank_cond = cls._build_cte(bank_name)
+        conditions = cls._build_where_conditions(
+            date_start, date_end, buy_sell, special_states, appid, bank_cond, cust_name=cust_name,
+        )
+
+        from_sql = cls._build_from(product_type, with_pt=True, with_maturity=False)
+        profit_join, case_exprs = cls._build_profit_join(profit_type, date_start, date_end)
+        join = cls._join_clause(dimension, bank_name)
+
+        extra_joins = []
+        if join:
+            extra_joins.append(join)
+        extra_joins.append(profit_join)
+
+        where_clause = "\n  AND ".join(conditions)
+        joins_sql = "\n".join(extra_joins)
+        profit_select = ",\n       ".join(case_exprs)
+
+        if dimension:
+            select_col, group_col = cls._group_cols(dimension)
+            primary_alias = cls.PROFIT_METRICS[profit_type[0]]["alias"]
+            order_by = f"{primary_alias} DESC"
+
+            inner_sql = (
+                f"{cte}"
+                f"SELECT {select_col}, {profit_select}\n"
+                f"FROM {from_sql}\n"
+                f"{joins_sql}\n"
+                f"WHERE {where_clause}\n"
+                f"GROUP BY {group_col}\n"
+                f"ORDER BY {order_by}"
+            )
+        else:
+            inner_sql = (
+                f"{cte}"
+                f"SELECT {profit_select}\n"
+                f"FROM {from_sql}\n"
+                f"{joins_sql}\n"
+                f"WHERE {where_clause}"
+            )
+
+        # HAVING filter for amount
+        having_clause = ""
+        if amount_op is not None and amount_value is not None and dimension:
+            op = cls.OP_MAP.get(amount_op, ">")
+            primary_alias = cls.PROFIT_METRICS[profit_type[0]]["alias"]
+            having_clause = f"\nHAVING {primary_alias} {op} {amount_value}"
+
+        if top_n and top_n > 0 and dimension:
+            return f"SELECT * FROM (\n  {inner_sql}\n{having_clause}) WHERE ROWNUM <= {top_n}"
+
+        if having_clause:
+            return inner_sql + having_clause
+        return inner_sql
+
+    @classmethod
+    def build_profit_volume_query(cls, profit_type: list[str], product_type: str = "all",
+                                  date_start: str | None = None, date_end: str | None = None,
+                                  special_states=None, buy_sell: str | None = None,
+                                  bank_name: str | None = None, cust_name: str | None = None,
+                                  appid=None, dimension: str | None = None,
+                                  top_n: int | None = None, hedge_ratio: bool = False,
+                                  amount_op: str | None = None,
+                                  amount_value: float | None = None) -> str:
+        """Build a combined profit + volume query."""
+        cls._validate_product_type(product_type)
+        cls._validate_buy_sell(buy_sell)
+
+        cte, bank_cond = cls._build_cte(bank_name)
+        conditions = cls._build_where_conditions(
+            date_start, date_end, buy_sell, special_states, appid, bank_cond,
+            cust_name=cust_name, hedge_ratio_default=hedge_ratio,
+        )
+
+        from_sql = cls._build_from(product_type, with_pt=True, with_maturity=False)
+        profit_join, case_exprs = cls._build_profit_join(profit_type, date_start, date_end)
+        join = cls._join_clause(dimension, bank_name)
+
+        extra_joins = []
+        if join:
+            extra_joins.append(join)
+        extra_joins.append(profit_join)
+
+        where_clause = "\n  AND ".join(conditions)
+        joins_sql = "\n".join(extra_joins)
+
+        select_parts = list(case_exprs)
+        select_parts.append("SUM(t.USDAMOUNT) as TOTAL_AMOUNT")
+        select_parts.append("COUNT(*) as TRADE_COUNT")
+
+        if hedge_ratio:
+            select_parts.append(f"{cls.HEDGE_RATIO_SQL} as HEDGE_RATIO")
+            select_parts.append(
+                "SUM(CASE WHEN t.PT IN ('fwd','swap') THEN t.USDAMOUNT ELSE 0 END) as DERIVATIVE_AMOUNT"
+            )
+            select_parts.append(
+                "SUM(CASE WHEN t.PT IN ('fwd','swap') THEN 1 ELSE 0 END) as DERIVATIVE_COUNT"
+            )
+
+        select_sql = ",\n       ".join(select_parts)
+
+        if dimension:
+            select_col, group_col = cls._group_cols(dimension)
+            primary_alias = cls.PROFIT_METRICS[profit_type[0]]["alias"]
+            order_by = f"{primary_alias} DESC" if not hedge_ratio else "HEDGE_RATIO DESC"
+
+            inner_sql = (
+                f"{cte}"
+                f"SELECT {select_col}, {select_sql}\n"
+                f"FROM {from_sql}\n"
+                f"{joins_sql}\n"
+                f"WHERE {where_clause}\n"
+                f"GROUP BY {group_col}\n"
+                f"ORDER BY {order_by}"
+            )
+        else:
+            inner_sql = (
+                f"{cte}"
+                f"SELECT {select_sql}\n"
+                f"FROM {from_sql}\n"
+                f"{joins_sql}\n"
+                f"WHERE {where_clause}"
+            )
+
+        # HAVING filter
+        having_clause = ""
+        if amount_op is not None and amount_value is not None and dimension:
+            op = cls.OP_MAP.get(amount_op, ">")
+            primary_alias = cls.PROFIT_METRICS[profit_type[0]]["alias"]
+            having_clause = f"\nHAVING {primary_alias} {op} {amount_value}"
+
+        if top_n and top_n > 0 and dimension:
+            return f"SELECT * FROM (\n  {inner_sql}\n{having_clause}) WHERE ROWNUM <= {top_n}"
+
+        if having_clause:
+            return inner_sql + having_clause
+        return inner_sql

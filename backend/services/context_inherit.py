@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Framework params: safe to inherit for both follow-ups and new queries.
 _INHERIT_PARAMS = {
     "bank_name", "cust_name", "product_type", "aggregate", "dimension",
-    "top_n", "amount_filter", "hedge_ratio", "appid",
+    "top_n", "amount_filter", "hedge_ratio", "appid", "profit_type",
 }
 
 # Query-specific params: only inherited when the current query is a follow-up.
@@ -66,7 +66,7 @@ def inherit_params_from_context(context: list | None, current: dict, user_text: 
                 val = prev_params.get(key)
                 if val is not None and val != "" and val != False and val != []:
                     current_val = current.get(key)
-                    if current_val is None or current_val == "" or current_val == False:
+                    if current_val is None or current_val == "" or current_val == False or current_val == []:
                         inherited[key] = val
             if inherited:
                 logger.info("Context inherit (followup=%s): %s", is_followup, list(inherited.keys()))

@@ -32,7 +32,57 @@ def build_sql(parsed, date_start=None, date_end=None):
     amount_filter = parsed.get("amount_filter")
     top_n = parsed.get("top_n")
 
-    if amount_filter:
+    profit_type = parsed.get("profit_type") or []
+
+    if profit_type and amount_filter:
+        return TradeQueryBuilder.build_profit_volume_query(
+            profit_type=profit_type,
+            product_type=parsed["product_type"],
+            date_start=date_start, date_end=date_end,
+            special_states=special_states, buy_sell=buy_sell,
+            bank_name=bank_name,
+            cust_name=cust_name, appid=parsed.get("appid"),
+            dimension=parsed.get("dimension", "bank"),
+            top_n=top_n,
+            hedge_ratio=parsed.get("hedge_ratio", False),
+            amount_op=amount_filter["amount_op"],
+            amount_value=amount_filter["amount_value"],
+        )
+    elif profit_type and top_n and top_n > 0:
+        return TradeQueryBuilder.build_profit_volume_query(
+            profit_type=profit_type,
+            product_type=parsed["product_type"],
+            date_start=date_start, date_end=date_end,
+            special_states=special_states, buy_sell=buy_sell,
+            bank_name=bank_name,
+            cust_name=cust_name, appid=parsed.get("appid"),
+            dimension=parsed.get("dimension", "bank"),
+            top_n=top_n,
+            hedge_ratio=parsed.get("hedge_ratio", False),
+        )
+    elif profit_type:
+        if parsed.get("aggregate") or parsed.get("hedge_ratio"):
+            return TradeQueryBuilder.build_profit_volume_query(
+                profit_type=profit_type,
+                product_type=parsed["product_type"],
+                date_start=date_start, date_end=date_end,
+                special_states=special_states, buy_sell=buy_sell,
+                bank_name=bank_name,
+                cust_name=cust_name, appid=parsed.get("appid"),
+                dimension=parsed.get("dimension", "bank"),
+                hedge_ratio=parsed.get("hedge_ratio", False),
+            )
+        else:
+            return TradeQueryBuilder.build_profit_query(
+                profit_type=profit_type,
+                product_type=parsed["product_type"],
+                date_start=date_start, date_end=date_end,
+                special_states=special_states, buy_sell=buy_sell,
+                bank_name=bank_name,
+                cust_name=cust_name, appid=parsed.get("appid"),
+                dimension=parsed.get("dimension"),
+            )
+    elif amount_filter:
         return TradeQueryBuilder.build_filtered_query(
             product_type=parsed["product_type"],
             date_start=date_start, date_end=date_end,

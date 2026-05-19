@@ -42,6 +42,7 @@ def _fields_defaults() -> dict:
         "dimension": "bank",
         "hedge_ratio": False,
         "appid": None,
+        "profit_type": [],
     }
 
 
