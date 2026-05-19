@@ -8,7 +8,8 @@ import AdminRules from './views/AdminRules.vue'
 import Sidebar from './components/Sidebar.vue'
 import WelcomeGuide from './components/WelcomeGuide.vue'
 import { checkHealth, parseQuery, executeQuery,
-         createSession, listSessions, getSession, saveTurn } from './api.js'
+         createSession, listSessions, getSession, saveTurn,
+         pricingInquiry, pricingConfirm, pricingRefresh, pricingCancel } from './api.js'
 
 const connectionStatus = ref('checking')
 const messages = reactive([])
@@ -113,6 +114,30 @@ async function handleSend(text) {
   const botIdx = messages.length
   messages.push({ type: 'bot', mode: 'loading' })
   inputAreaRef.value?.focus()
+
+  // 检测询报价意图
+  const pricingKeywords = ['询价', '报价', '结汇', '购汇', '成交', '点差', '比价', '价格']
+  const isPricing = pricingKeywords.some(kw => text.includes(kw))
+
+  if (isPricing) {
+    messages[botIdx] = { type: 'bot', mode: 'loading' }
+    try {
+      const context = buildContext()
+      const result = await pricingInquiry(text, {}, {
+        sessionId: sessionId.value,
+        context,
+      })
+      // Merge insights if available
+      if (result.insights && result.insights.length > 0) {
+        result.insights = result.insights
+      }
+      messages[botIdx] = { type: 'bot', mode: result.mode || 'pricing_single', data: result }
+    } catch (err) {
+      messages[botIdx] = { type: 'bot', mode: 'error', error: err.message }
+    }
+    _persistTurn()
+    return
+  }
 
   // Check if this is an analytical question (为什么/原因/分析)
   const isAnalytical = /为什么|原因|分析|怎么回事|解释/.test(text)
@@ -292,6 +317,41 @@ async function handleReset(msgIdx) {
   }
 }
 
+async function handlePricingConfirm(pricingId) {
+  const idx = messages.findIndex(m => m.type === 'bot' && m.data?.pricing_id === pricingId)
+  if (idx < 0) return
+  messages[idx] = { ...messages[idx], mode: 'loading' }
+  try {
+    const result = await pricingConfirm(pricingId, { sessionId: sessionId.value })
+    messages[idx] = { type: 'bot', mode: result.mode, data: result.data || result }
+  } catch (err) {
+    messages[idx] = { type: 'bot', mode: 'error', error: err.message }
+  }
+}
+
+async function handlePricingRefresh(pricingId) {
+  const idx = messages.findIndex(m => m.type === 'bot' && m.data?.pricing_id === pricingId)
+  if (idx < 0) return
+  messages[idx] = { ...messages[idx], mode: 'loading' }
+  try {
+    const result = await pricingRefresh(pricingId)
+    messages[idx] = { type: 'bot', mode: result.mode, data: result }
+  } catch (err) {
+    messages[idx] = { type: 'bot', mode: 'error', error: err.message }
+  }
+}
+
+async function handlePricingCancel(pricingId) {
+  const idx = messages.findIndex(m => m.type === 'bot' && m.data?.pricing_id === pricingId)
+  if (idx < 0) return
+  try {
+    await pricingCancel(pricingId)
+    messages[idx] = { type: 'bot', mode: 'text', text: '报价已取消' }
+  } catch (err) {
+    messages[idx] = { type: 'bot', mode: 'error', error: err.message }
+  }
+}
+
 function handleNavigate(target) {
   if (target === 'admin') viewMode.value = 'admin'
 }
@@ -315,7 +375,7 @@ function handleNavigate(target) {
             <StatusHeader :status="connectionStatus" />
             <div style="flex: 1; display: flex; flex-direction: column; max-width: 900px; margin: 0 auto; width: 100%; padding: 0 16px;">
               <WelcomeGuide v-if="messages.length === 0" @quick-query="handleSend" />
-              <MessageArea v-else :messages="messages" @confirm="handleConfirm" @reset="handleReset" @quick-query="handleSend" />
+              <MessageArea v-else :messages="messages" @confirm="handleConfirm" @reset="handleReset" @quick-query="handleSend" @pricing-confirm="handlePricingConfirm" @pricing-cancel="handlePricingCancel" @pricing-refresh="handlePricingRefresh" />
               <InputArea ref="inputAreaRef" @send="handleSend" />
             </div>
           </template>

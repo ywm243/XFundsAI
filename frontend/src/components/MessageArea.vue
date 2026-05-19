@@ -2,12 +2,18 @@
 import { watch, ref, nextTick } from 'vue'
 import { NScrollbar, NEmpty } from 'naive-ui'
 import BotMessage from './BotMessage.vue'
+import PricingCard from './PricingCard.vue'
 
 const props = defineProps({
   messages: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['confirm', 'reset', 'quickQuery'])
+const emit = defineEmits(['confirm', 'reset', 'quickQuery', 'pricingConfirm', 'pricingCancel', 'pricingRefresh'])
+
+function isPricingMode(mode) {
+  return ['pricing_single', 'pricing_multi', 'pricing_compare',
+          'pricing_scenario', 'pricing_direct_trade'].includes(mode)
+}
 
 const scrollbarRef = ref(null)
 
@@ -40,7 +46,44 @@ watch(() => props.messages, () => {
       <div v-if="msg.type === 'user'" style="display: flex; justify-content: flex-end;">
         <div class="user-bubble">{{ msg.text }}</div>
       </div>
-      <!-- Bot message -->
+      <!-- Bot message: pricing modes -->
+      <template v-else-if="isPricingMode(msg.mode)">
+        <PricingCard
+          :data="msg.data"
+          @confirm="(pricingId) => emit('pricingConfirm', pricingId, idx)"
+          @cancel="(pricingId) => emit('pricingCancel', pricingId, idx)"
+          @refresh="(pricingId) => emit('pricingRefresh', pricingId, idx)"
+          @quickQuery="(query) => emit('quickQuery', query)"
+        />
+      </template>
+
+      <!-- Bot message: follow-up questions -->
+      <div v-else-if="msg.mode === 'follow_up'" style="padding: 12px 0;">
+        <p v-for="(q, qi) in msg.data?.follow_up" :key="qi" style="margin-bottom: 8px; color: var(--text-secondary);">
+          {{ q }}
+        </p>
+      </div>
+
+      <!-- Bot message: trade success -->
+      <div v-else-if="msg.mode === 'trade_success'" style="display: flex; align-items: center; gap: 12px; padding: 12px; background: rgba(39,174,96,0.1); border-radius: 8px;">
+        <span style="font-size: 20px;">&#x2705;</span>
+        <div>
+          <div style="font-weight: 600; font-size: 15px; color: var(--text-primary);">交易成功</div>
+          <div style="font-size: 12px; color: var(--text-muted);">编号：{{ msg.data?.trade_id }}</div>
+          <div style="font-size: 12px; color: var(--text-muted);">成交价：{{ msg.data?.executed_rate }}</div>
+          <div v-if="msg.data?.novice_tip" style="font-size: 12px; color: var(--blue); margin-top: 4px;">
+            {{ msg.data?.novice_tip }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Bot message: trade failed -->
+      <div v-else-if="msg.mode === 'trade_failed'" style="padding: 12px; background: rgba(192,57,43,0.1); border-radius: 8px; border-left: 3px solid var(--error);">
+        <div style="font-weight: 600; color: var(--error); margin-bottom: 4px;">交易失败</div>
+        <div style="font-size: 13px; color: var(--text-secondary);">{{ msg.data?.error_reason || '请稍后重试' }}</div>
+      </div>
+
+      <!-- Bot message: default (existing modes) -->
       <BotMessage
         v-else
         :message="msg"
