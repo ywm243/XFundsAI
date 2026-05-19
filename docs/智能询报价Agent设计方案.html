@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能询报价Agent设计方案 - 钱塘汇对客交易系统</title>
+<style>
+:root {
+  --navy:#0B1D3A; --navy-mid:#142D5E; --gold:#C59B3C; --gold-light:#E8C86A;
+  --blue:#1E4D8C; --blue-light:#D6E4F0; --green:#27AE60; --green-light:#E8F8F0;
+  --orange:#E67E22; --orange-light:#FEF5E7; --red:#C0392B; --red-light:#FDEDEC;
+  --purple:#8E44AD; --purple-light:#F4ECF7;
+  --gray-50:#F8F9FA; --gray-100:#F2F3F5; --gray-200:#E5E7EB; --gray-300:#D1D5DB;
+  --gray-500:#6B7280; --gray-700:#374151; --gray-900:#1A1A2E; --white:#FFFFFF;
+  --shadow:0 2px 8px rgba(11,29,58,0.08); --shadow-lg:0 8px 24px rgba(11,29,58,0.12);
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;background:var(--gray-100);color:var(--gray-900);line-height:1.8;}
+
+.container{max-width:1200px;margin:0 auto;padding:24px;}
+
+.page-header{background:linear-gradient(135deg,var(--navy) 0%,var(--navy-mid) 100%);padding:40px;margin-bottom:32px;border-radius:8px;box-shadow:var(--shadow-lg);}
+.page-header h1{color:var(--gold);font-size:28px;font-weight:700;margin-bottom:12px;}
+.page-header .subtitle{color:rgba(255,255,255,0.8);font-size:14px;}
+.page-header .meta{margin-top:16px;display:flex;gap:24px;color:rgba(255,255,255,0.6);font-size:12px;}
+
+.section{background:var(--white);border-radius:8px;margin-bottom:24px;box-shadow:var(--shadow);overflow:hidden;}
+.section-header{background:var(--gray-50);padding:16px 24px;border-bottom:1px solid var(--gray-200);display:flex;align-items:center;gap:12px;}
+.section-header h2{color:var(--navy);font-size:18px;font-weight:700;}
+.section-header .badge{background:var(--gold);color:var(--navy);padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;}
+.section-body{padding:24px;}
+
+h3{color:var(--navy);font-size:16px;font-weight:600;margin:24px 0 12px 0;padding-left:12px;border-left:3px solid var(--gold);}
+h3:first-child{margin-top:0;}
+h4{color:var(--gray-700);font-size:14px;font-weight:600;margin:16px 0 8px 0;}
+
+p{margin-bottom:12px;color:var(--gray-700);font-size:14px;}
+
+ul,ol{margin:12px 0 12px 24px;color:var(--gray-700);font-size:14px;}
+li{margin-bottom:6px;}
+
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}
+th{background:var(--navy);color:var(--white);padding:10px 12px;text-align:left;font-weight:600;}
+td{padding:10px 12px;border-bottom:1px solid var(--gray-200);}
+tr:hover td{background:var(--gray-50);}
+table code{background:var(--gray-100);padding:2px 6px;border-radius:3px;font-family:'Consolas',monospace;font-size:12px;}
+
+.code-block{background:var(--gray-900);color:var(--gray-100);padding:16px;border-radius:6px;overflow-x:auto;font-family:'Consolas','Monaco',monospace;font-size:13px;margin:12px 0;}
+.code-block .comment{color:var(--gray-500);}
+.code-block .keyword{color:var(--gold-light);}
+.code-block .string{color:var(--green-light);}
+
+.highlight-box{background:var(--blue-light);border-left:4px solid var(--blue);padding:16px;margin:16px 0;border-radius:0 6px 6px 0;}
+.highlight-box.warning{background:var(--orange-light);border-left-color:var(--orange);}
+.highlight-box.success{background:var(--green-light);border-left-color:var(--green);}
+.highlight-box.danger{background:var(--red-light);border-left-color:var(--red);}
+.highlight-box p{margin:0;}
+
+.flow-diagram{background:var(--gray-50);padding:20px;border-radius:6px;margin:16px 0;font-family:'Consolas',monospace;font-size:12px;white-space:pre;overflow-x:auto;color:var(--gray-700);}
+
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+@media(max-width:900px){.two-col{grid-template-columns:1fr;}}
+
+.api-section{border:1px solid var(--gray-200);border-radius:6px;margin:16px 0;}
+.api-header{background:var(--green);color:var(--white);padding:12px 16px;display:flex;align-items:center;gap:12px;}
+.api-header .method{background:rgba(255,255,255,0.2);padding:4px 10px;border-radius:4px;font-size:11px;font-weight:700;}
+.api-header .path{font-family:'Consolas',monospace;font-size:14px;}
+.api-body{padding:16px;}
+
+.field-table{margin:0;}
+.field-table th{background:var(--gray-100);color:var(--gray-700);font-size:12px;}
+.field-table td{font-size:12px;}
+
+.toc{background:var(--white);padding:24px;border-radius:8px;margin-bottom:24px;box-shadow:var(--shadow);}
+.toc h3{color:var(--navy);margin:0 0 16px 0;border:none;padding:0;font-size:16px;}
+.toc-list{list-style:none;margin:0;padding:0;}
+.toc-list li{margin-bottom:8px;}
+.toc-list a{color:var(--blue);text-decoration:none;font-size:14px;}
+.toc-list a:hover{color:var(--gold);}
+.toc-list .sub{margin-left:20px;margin-top:8px;}
+.toc-list .sub a{color:var(--gray-500);font-size:13px;}
+
+.status-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;}
+.status-tag.pending{background:var(--orange-light);color:var(--orange);}
+.status-tag.done{background:var(--green-light);color:var(--green);}
+
+.phase-timeline{position:relative;padding-left:32px;}
+.phase-timeline::before{content:'';position:absolute;left:8px;top:0;bottom:0;width:2px;background:var(--gray-300);}
+.phase-item{position:relative;margin-bottom:24px;}
+.phase-item::before{content:'';position:absolute;left:-28px;top:4px;width:16px;height:16px;background:var(--gold);border-radius:50%;border:3px solid var(--white);box-shadow:var(--shadow);}
+.phase-item h4{color:var(--navy);margin:0 0 8px 0;font-size:15px;}
+.phase-item ul{margin:0;}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="page-header">
+  <h1>智能询报价 Agent 设计方案</h1>
+  <div class="subtitle">基于现有智能BI系统扩展，支持外汇询价、比价、情景分析与交易执行</div>
+  <div class="meta">
+    <span>版本：v1.0</span>
+    <span>日期：2026-05-19</span>
+    <span>状态：<span class="status-tag pending">待评估</span></span>
+  </div>
+</div>
+
+<div class="toc">
+  <h3>目录</h3>
+  <ul class="toc-list">
+    <li><a href="#overview">一、需求概述</a></li>
+    <li><a href="#architecture">二、整体架构</a></li>
+    <li><a href="#pricing-core">三、询报价核心模块</a></li>
+    <li><a href="#trade-flow">四、交易流程</a></li>
+    <li><a href="#customer-insight">五、客户智能洞察</a></li>
+    <li><a href="#interaction">六、交互与引导</a></li>
+    <li><a href="#parsing-accuracy">七、LLM解析准确性保障</a></li>
+    <li><a href="#api-requirements">八、代客系统API接口需求</a></li>
+    <li><a href="#implementation">九、实现计划</a></li>
+  </ul>
+</div>
+
+<!-- ==================== 一、需求概述 ==================== -->
+<div class="section" id="overview">
+  <div class="section-header">
+    <h2>一、需求概述</h2>
+    <span class="badge">9项核心需求</span>
+  </div>
+  <div class="section-body">
+    <table>
+      <tr><th width="60">序号</th><th>需求</th><th width="120">所属子系统</th></tr>
+      <tr><td>1</td><td>对接内部代客系统已有的计价引擎，通过内部的计价引擎计算</td><td>询报价核心</td></tr>
+      <tr><td>2</td><td>支持单产品询价、多产品询价、多产品比价、情景分析</td><td>询报价核心</td></tr>
+      <tr><td>3</td><td>支持在报价有效期内，询价转交易</td><td>交易流程</td></tr>
+      <tr><td>4</td><td>价格方面要满足银行的风险要求和点差规则，不能出错</td><td>询报价核心</td></tr>
+      <tr><td>5</td><td>要有风险说明，对一些小白客户，要有引导和教研机制</td><td>交互与引导</td></tr>
+      <tr><td>6</td><td>要有记忆功能，要支持根据上下文解决客户意图</td><td>交互与引导</td></tr>
+      <tr><td>7</td><td>要保证LLM解析的准确性，不能超出规定范围</td><td>解析准确性</td></tr>
+      <tr><td>8</td><td>支持自然语言输入和语音输入</td><td>交互与引导</td></tr>
+      <tr><td>9</td><td>支持没有先询价，直接发起询价交易，走询价流程</td><td>交易流程</td></tr>
+    </table>
+
+    <h3>补充需求：客户智能洞察</h3>
+    <p>基于客户记忆和画像，提供主动分析功能：</p>
+    <ul>
+      <li>根据客户历史询价记忆，自动推送相关产品的走势图/行情分析</li>
+      <li>根据客户画像和偏好，自动进行产品对比并生成对比说明</li>
+      <li>识别客户询价模式，主动推荐适合的避险策略</li>
+    </ul>
+
+    <h3>子系统划分</h3>
+    <div class="two-col">
+      <div class="highlight-box">
+        <p><strong>询报价核心</strong>：计价引擎对接、多产品询价/比价、点差与风险规则</p>
+      </div>
+      <div class="highlight-box">
+        <p><strong>交易流程</strong>：询价转交易、直接询价交易、有效期管理</p>
+      </div>
+      <div class="highlight-box">
+        <p><strong>交互与引导</strong>：风险说明、客户引导/教研、记忆与上下文、语音输入</p>
+      </div>
+      <div class="highlight-box">
+        <p><strong>解析准确性</strong>：LLM解析约束、规则守门扩展</p>
+      </div>
+    </div>
+
+    <h3>已确认的关键约束</h3>
+    <table>
+      <tr><th>约束项</th><th>确认结果</th></tr>
+      <tr><td>计价引擎接入方式</td><td>REST API</td></tr>
+      <tr><td>支持的产品类型</td><td>即期结售汇、远期结售汇、外汇掉期</td></tr>
+      <tr><td>询价转交易方式</td><td>API自动下单，同步返回成交结果</td></tr>
+      <tr><td>报价有效期</td><td>本地配置，默认5分钟</td></tr>
+      <tr><td>客户风险等级</td><td>代客系统已有字段可读取</td></tr>
+      <tr><td>情景分析模式</td><td>预设情景对比（多次调用询价接口）</td></tr>
+      <tr><td>语音输入</td><td>暂不实现，保留接口占位</td></tr>
+      <tr><td>点差规则执行</td><td>引擎内部处理，本系统只传参数取结果</td></tr>
+      <tr><td>授信/限额检查</td><td>询价不检查，下单时代客系统同步检查</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== 二、整体架构 ==================== -->
+<div class="section" id="architecture">
+  <div class="section-header">
+    <h2>二、整体架构</h2>
+    <span class="badge">方案B+</span>
+  </div>
+  <div class="section-body">
+    <h3>架构选型：独立模块 + 进程内事件总线</h3>
+    <p>在现有智能BI系统基础上，新建独立的询报价模块，共享基础设施（LLM解析、规则引擎、记忆系统），通过进程内事件总线实现Agent间松耦合通信。</p>
+
+    <div class="highlight-box success">
+      <p><strong>选择理由：</strong>询报价是有状态多步流程，需要独立状态机管理；银行定价交易有合规隔离要求，独立模块便于审计；共享基础设施避免重复开发；事件总线支持未来扩展市场行情Agent等新能力。</p>
+    </div>
+
+    <h3>模块布局</h3>
+    <div class="code-block">
+backend/
+  app.py                      # FastAPI 入口，注册所有路由
+  event_bus.py                # 进程内事件总线（新增）
+  llm_parser/                 # 共享：规则+LLM解析
+  db/                         # 共享：Oracle + MySQL
+  knowledge_base/             # 共享：语义规则
+  services/                   # BI Agent（现有）
+  pricing/                    # 询报价 Agent（新增）
+    __init__.py
+    routes.py                 # /api/pricing/* 路由
+    service.py                # 询报价业务编排
+    engine_client.py          # 计价引擎 REST 适配器
+    state_machine.py          # 报价生命周期状态机
+    risk_guard.py             # 风控校验 + 风险提示生成
+    trade_executor.py         # 询价转交易下单
+    insight_engine.py         # 客户智能洞察（新增）
+    context_inherit.py        # 询报价上下文继承
+    validator.py              # 必填字段完整性校验
+    pricing_rules.py          # 询报价领域的规则扩展
+  market/                     # 市场行情 Agent（未来）
+    </div>
+
+    <h3>事件总线设计</h3>
+    <table>
+      <tr><th width="200">事件名</th><th>发布者</th><th>订阅者</th><th>说明</th></tr>
+      <tr><td><code>quote.created</code></td><td>Pricing Agent</td><td>Insight Engine</td><td>新报价生成，触发智能洞察</td></tr>
+      <tr><td><code>quote.expired</code></td><td>Pricing Agent</td><td>前端/市场 Agent</td><td>报价过期，提示刷新</td></tr>
+      <tr><td><code>trade.executed</code></td><td>Pricing Agent</td><td>Insight Engine</td><td>交易完成，更新客户画像</td></tr>
+      <tr><td><code>market.rate_changed</code></td><td>Market Agent（未来）</td><td>Pricing Agent</td><td>汇率变动，提示报价可能失效</td></tr>
+      <tr><td><code>customer.risk_alert</code></td><td>Risk Guard</td><td>前端</td><td>客户风险等级与产品不匹配</td></tr>
+    </table>
+
+    <h3>数据流总览</h3>
+    <div class="flow-diagram">
+┌──────────────────────────────────────────────────────────────┐
+│                        前端 (Vue 3)                           │
+│  MessageArea → ResultCard(BI) / PricingCard(询报价)           │
+└─────────────┬──────────────────────────┬─────────────────────┘
+              │ /api/chat                │ /api/pricing/*
+              ▼                          ▼
+┌──────────────────────────────────────────────────────────────┐
+│                     后端 (FastAPI)                            │
+│                                                              │
+│  ┌──────────┐   event_bus   ┌───────────┐                   │
+│  │ BI Agent │◄─────────────►│  Pricing  │◄────┐             │
+│  │ (现有)   │               │  Agent    │     │             │
+│  └──────────┘               └─────┬─────┘     │             │
+│                                   │           │             │
+│                                   ▼           │             │
+│                            ┌──────────────┐   │             │
+│                            │Insight Engine│───┘             │
+│                            │(客户智能洞察) │                 │
+│                            └──────────────┘                 │
+│  ┌─────────────────┐              │                        │
+│  │ 共享基础设施     │              │                        │
+│  │ llm_parser/     │              │                        │
+│  │ db/mysql_store  │              │                        │
+│  │ knowledge_base  │              │                        │
+│  └─────────────────┘              │                        │
+└───────────────────────────────────┼────────────────────────┘
+                                    ▼
+                          ┌──────────────────┐
+                          │   代客系统 API    │
+                          │  · 询价接口       │
+                          │  · 交易接口       │
+                          │  · 客户信息接口   │
+                          └──────────────────┘
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 三、询报价核心模块 ==================== -->
+<div class="section" id="pricing-core">
+  <div class="section-header">
+    <h2>三、询报价核心模块</h2>
+  </div>
+  <div class="section-body">
+    <h3>3.1 报价生命周期状态机</h3>
+    <div class="flow-diagram">
+                    ┌──────────────────────────────┐
+                    │                              │
+                    ▼                              │
+  [IDLE] ──询价请求──▶ [QUOTING] ──引擎返回──▶ [QUOTED] ──过期──▶ [EXPIRED]
+                                                │
+                                    ┌───────────┼───────────┐
+                                    │           │           │
+                                    ▼           ▼           ▼
+                              [CANCELLED]  [REFRESH]  [TRADING] ──同步成交──▶ [TRADED]
+                                                              │
+                                                              └──失败──▶ [TRADE_FAILED]
+    </div>
+
+    <table>
+      <tr><th width="100">状态</th><th>触发条件</th><th>可执行动作</th><th>超时处理</th></tr>
+      <tr><td>IDLE</td><td>初始 / 完成后</td><td>发起询价</td><td>无</td></tr>
+      <tr><td>QUOTING</td><td>用户提交询价请求</td><td>等待引擎响应</td><td>5秒 → ERROR</td></tr>
+      <tr><td>QUOTED</td><td>引擎返回报价</td><td>确认下单 / 取消 / 刷新 / 等过期</td><td>有效期到 → EXPIRED</td></tr>
+      <tr><td>EXPIRED</td><td>有效期到</td><td>重新询价</td><td>无</td></tr>
+      <tr><td>TRADING</td><td>确认下单</td><td>等待同步成交</td><td>10秒 → TRADE_FAILED</td></tr>
+      <tr><td>TRADED</td><td>成交返回</td><td>完成</td><td>无</td></tr>
+      <tr><td>TRADE_FAILED</td><td>下单失败</td><td>重试 / 重新询价</td><td>无</td></tr>
+      <tr><td>CANCELLED</td><td>用户取消</td><td>重新询价</td><td>无</td></tr>
+    </table>
+
+    <h3>3.2 意图分类与执行策略</h3>
+    <table>
+      <tr><th width="120">意图类型</th><th>示例输入</th><th>执行策略</th></tr>
+      <tr><td>SINGLE</td><td>"美元即期询价"</td><td>1次询价 → 展示报价</td></tr>
+      <tr><td>MULTI</td><td>"美元和欧元即期询价"</td><td>多次询价并发 → 展示多报价</td></tr>
+      <tr><td>COMPARE</td><td>"美元即期和3个月远期比价"</td><td>多次询价并发 → 对比展示</td></tr>
+      <tr><td>SCENARIO</td><td>"美元远期不同期限对比"</td><td>按预设情景多次询价 → 对比展示</td></tr>
+      <tr><td>DIRECT_TRADE</td><td>"帮我买100万美元即期"</td><td>询价 → 展示报价+确认 → 下单</td></tr>
+    </table>
+
+    <div class="highlight-box warning">
+      <p><strong>关键约束：</strong>比价和情景分析本质是多次调用真实询价接口，本地对比展示。计价引擎不支持假设参数（如"汇率涨到7.3"），只能用真实交易参数组合询价。</p>
+    </div>
+
+    <h3>3.3 预设情景配置</h3>
+    <p>情景由业务人员在规则中配置，不是LLM自由组合：</p>
+    <div class="code-block">
+{
+  "pricing": {
+    "scenarios": {
+      "远期期限对比": {
+        "description": "对比不同期限远期价格",
+        "product_type": "FWD",
+        "params_variations": [
+          {"tenor": "1M"},
+          {"tenor": "3M"},
+          {"tenor": "6M"},
+          {"tenor": "1Y"}
+        ]
+      },
+      "即远期对比": {
+        "description": "对比即期与远期价格",
+        "params_variations": [
+          {"product_type": "SPOT"},
+          {"product_type": "FWD", "tenor": "3M"}
+        ]
+      },
+      "方向对比": {
+        "description": "对比结汇与购汇价格",
+        "params_variations": [
+          {"direction": "B"},
+          {"direction": "S"}
+        ]
+      }
+    }
+  }
+}
+    </div>
+
+    <h3>3.4 风控校验边界</h3>
+    <table>
+      <tr><th>阶段</th><th>本系统职责</th><th>代客系统职责</th></tr>
+      <tr><td>询价前</td><td>黑名单/冻结客户拦截、客户状态检查</td><td>—</td></tr>
+      <tr><td>询价</td><td>参数组装、调用询价接口</td><td>计算报价+点差</td></tr>
+      <tr><td>询价后</td><td>报价异常检测（价格为0、点差异常大等）</td><td>—</td></tr>
+      <tr><td>下单</td><td>传报价ID、调用交易接口、展示结果</td><td>授信检查、限额检查、成交/拒绝</td></tr>
+    </table>
+    <p>下单失败时，代客系统返回拒绝原因（额度不足、授信到期等），本系统翻译成客户可理解的语言并展示。</p>
+  </div>
+</div>
+
+<!-- ==================== 四、交易流程 ==================== -->
+<div class="section" id="trade-flow">
+  <div class="section-header">
+    <h2>四、交易流程</h2>
+  </div>
+  <div class="section-body">
+    <h3>4.1 正常流程</h3>
+    <div class="flow-diagram">
+[QUOTED] ──用户点击确认──▶ 调代客交易接口(quote_id) ──同步返回──▶ [TRADED]
+                                                                │
+                                                          展示成交确认单：
+                                                          · 交易编号
+                                                          · 成交价格
+                                                          · 成交时间
+                                                          · 交易要素摘要
+    </div>
+
+    <h3>4.2 异常流程</h3>
+    <div class="flow-diagram">
+[QUOTED] ──确认──▶ 调交易接口 ──拒绝──▶ [TRADE_FAILED]
+                                              │
+                                        解析拒绝原因：
+                                        · CREDIT_EXCEEDED  → "可用授信额度不足"
+                                        · LIMIT_EXCEEDED  → "交易限额超限"
+                                        · CUSTOMER_FROZEN → "客户账户状态异常"
+                                        · QUOTE_EXPIRED   → "报价已过期，请重新询价"
+                                        · SYSTEM_ERROR    → "系统异常，请稍后重试"
+                                              │
+                                        小白客户 → 额外引导说明
+                                              │
+                                        可选操作：重新询价 / 联系客户经理
+    </div>
+
+    <h3>4.3 直接询价交易</h3>
+    <p>用户没有先询价，直接说"帮我买100万美元即期"，走询价流程但不停留：</p>
+    <div class="flow-diagram">
+用户："帮我买100万美元即期"
+  │
+  ▼
+解析意图 → 识别为 DIRECT_TRADE 类型
+  │
+  ▼
+调询价接口 → 获取报价
+  │
+  ▼
+展示报价 + 倒计时 + "确认交易"按钮
+  │  （不是直接下单，必须经过报价展示环节）
+  ▼
+用户确认 → 调交易接口 → 成交/失败
+    </div>
+
+    <div class="highlight-box danger">
+      <p><strong>合规要求：</strong>不能跳过报价展示环节。即使客户直接说要交易，也必须先调询价接口拿到报价，展示给客户看（含有效期、风险提示），客户确认后才下单。</p>
+    </div>
+
+    <h3>4.4 报价有效期处理</h3>
+    <ul>
+      <li>有效期在本地规则中配置，默认5分钟，可通过Admin API热更新</li>
+      <li>前端 <code>QuoteCountdown.vue</code> 实时显示剩余时间</li>
+      <li>过期前30秒变红提示"报价即将过期"</li>
+      <li>过期后自动标记EXPIRED，提示重新询价</li>
+      <li>事件总线发布 <code>quote.expired</code>，市场Agent未来可据此刷新行情</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ==================== 五、客户智能洞察 ==================== -->
+<div class="section" id="customer-insight">
+  <div class="section-header">
+    <h2>五、客户智能洞察</h2>
+    <span class="badge">新增</span>
+  </div>
+  <div class="section-body">
+    <h3>5.1 功能概述</h3>
+    <p>基于客户记忆和画像，提供主动分析推送，增强客户体验和交易决策支持：</p>
+    <table>
+      <tr><th width="150">洞察类型</th><th>触发条件</th><th>展示内容</th></tr>
+      <tr><td>走势图推送</td><td>客户询价某货币对时</td><td>该货币对近30天汇率走势图 + 简要分析</td></tr>
+      <tr><td>产品对比推荐</td><td>客户多次询价同类产品</td><td>自动对比不同产品优劣 + 适用场景说明</td></tr>
+      <tr><td>避险策略推荐</td><td>识别客户有持续外汇风险敞口</td><td>推荐适合的避险产品组合</td></tr>
+      <tr><td>历史偏好提醒</td><td>客户询价时</td><td>"您常询3个月远期，是否按此期限报价？"</td></tr>
+    </table>
+
+    <h3>5.2 数据来源</h3>
+    <table>
+      <tr><th>数据源</th><th>内容</th><th>获取方式</th></tr>
+      <tr><td>客户记忆</td><td>历史询价记录、常询产品/期限/币种</td><td>memory_summaries 表（现有）</td></tr>
+      <tr><td>客户画像</td><td>风险等级、交易偏好、客户类型</td><td>代客系统客户信息接口</td></tr>
+      <tr><td>交易历史</td><td>历史成交记录、持仓情况</td><td>代客系统交易查询接口</td></tr>
+      <tr><td>市场行情</td><td>汇率走势、波动率</td><td>市场行情Agent（未来）/ 外部数据源</td></tr>
+    </table>
+
+    <h3>5.3 洞察引擎设计</h3>
+    <div class="code-block">
+class InsightEngine:
+    """客户智能洞察引擎"""
+
+    async def generate_insights(self, customer_id: str,
+                                 current_intent: InquiryIntent) -> list[Insight]:
+        """根据当前询价意图 + 客户画像，生成洞察推荐"""
+        insights = []
+
+        # 1. 走势图推送
+        if current_intent.currency_pair:
+            chart = await self.get_rate_trend(current_intent.currency_pair)
+            if chart:
+                insights.append(Insight(
+                    type="rate_trend",
+                    title=f"{current_intent.currency_pair} 近30天走势",
+                    content=chart,
+                    summary=self.generate_trend_summary(chart)
+                ))
+
+        # 2. 产品对比推荐
+        preferences = await self.get_customer_preferences(customer_id)
+        if self.should_compare_products(current_intent, preferences):
+            comparison = await self.generate_product_comparison(current_intent)
+            insights.append(Insight(
+                type="product_comparison",
+                title="相关产品对比",
+                content=comparison
+            ))
+
+        # 3. 避险策略推荐
+        if await self.has_fx_exposure(customer_id):
+            strategy = await self.recommend_hedge_strategy(customer_id)
+            insights.append(Insight(
+                type="hedge_strategy",
+                title="避险策略建议",
+                content=strategy
+            ))
+
+        return insights
+
+    async def get_rate_trend(self, currency_pair: str) -> ChartData:
+        """获取汇率走势图数据"""
+        # 调用市场行情Agent或外部数据源
+        pass
+
+    async def get_customer_preferences(self, customer_id: str) -> dict:
+        """从记忆系统读取客户偏好"""
+        pass
+    </div>
+
+    <h3>5.4 前端展示</h3>
+    <p>洞察内容作为报价卡片的附加模块展示：</p>
+    <div class="code-block">
+┌──────────────────────────────────────────────────┐
+│  美元/人民币 即期购汇                             │
+│  报价: 7.2450  点差: 50bp                        │
+│  有效期: 4:32                                    │
+│                                                  │
+│  ┌────────────────────────────────────────────┐ │
+│  │ 📊 USD/CNY 近30天走势                        │ │
+│  │ [走势图]                                     │ │
+│  │ 当前处于近期高位，较上月上涨1.2%              │ │
+│  └────────────────────────────────────────────┘ │
+│                                                  │
+│  💡 根据您的交易习惯，3个月远期可能更适合当前需求  │
+│     [查看远期报价]                               │
+│                                                  │
+│  [确认交易]   [取消]                              │
+└──────────────────────────────────────────────────┘
+    </div>
+
+    <h3>5.5 事件驱动触发</h3>
+    <p>洞察引擎订阅事件总线，在适当时机推送洞察：</p>
+    <table>
+      <tr><th>订阅事件</th><th>触发动作</th></tr>
+      <tr><td><code>quote.created</code></td><td>生成走势图、产品对比推荐</td></tr>
+      <tr><td><code>trade.executed</code></td><td>更新客户画像、触发后续策略推荐</td></tr>
+      <tr><td><code>market.rate_changed</code></td><td>若客户有相关报价，推送"汇率变动提醒"</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== 六、交互与引导 ==================== -->
+<div class="section" id="interaction">
+  <div class="section-header">
+    <h2>六、交互与引导</h2>
+  </div>
+  <div class="section-body">
+    <h3>6.1 风险提示与客户分层</h3>
+    <table>
+      <tr><th width="100">客户类型</th><th>询价时</th><th>确认下单前</th><th>成交后</th></tr>
+      <tr><td>专业客户</td><td>正常展示报价</td><td>直接确认</td><td>正常展示成交单</td></tr>
+      <tr><td>普通客户</td><td>正常展示报价</td><td>显示风险提示条，一键确认</td><td>正常展示成交单</td></tr>
+      <tr><td>小白客户</td><td>卡片底部显示术语解释</td><td>强制展示风险说明，需勾选确认</td><td>展示交易要点回放</td></tr>
+    </table>
+
+    <h3>6.2 术语解释机制</h3>
+    <p>小白客户模式下，报价卡片中的专业术语可点击展开解释：</p>
+    <div class="code-block">
+{
+  "pricing": {
+    "glossary": {
+      "点差": "银行买入价和卖出价之间的差额，点差越小对您越有利。",
+      "远期": "约定在未来某个日期按今天确定的价格进行交割的外汇交易。",
+      "掉期": "同时进行两笔金额相同、方向相反、交割日期不同的外汇交易。",
+      "bp": "基点（Basis Point），1bp = 0.01%。",
+      "交割": "外汇交易双方按约定的汇率和金额实际收付货币的行为。"
+    }
+  }
+}
+    </div>
+
+    <h3>6.3 记忆与上下文继承</h3>
+    <p>场景示例：省略参数的多轮对话</p>
+    <div class="code-block">
+用户：美元即期询价
+Agent：美元/人民币 即期结汇 报价 7.2450，有效期5分钟
+
+用户：远期呢？                    ← 省略了货币对和方向
+Agent：（继承上下文）美元/人民币 远期结汇 → 调询价接口
+
+用户：3个月的                      ← 继续省略
+Agent：（继承上下文）美元/人民币 3个月远期结汇 → 调询价接口
+    </div>
+
+    <h3>6.4 前端组件</h3>
+    <table>
+      <tr><th>组件</th><th>功能</th></tr>
+      <tr><td>PricingCard.vue</td><td>报价结果卡片（单报价/多报价）</td></tr>
+      <tr><td>QuoteCountdown.vue</td><td>有效期倒计时显示</td></tr>
+      <tr><td>ScenarioCompare.vue</td><td>比价/情景对比表格</td></tr>
+      <tr><td>RiskDisclosure.vue</td><td>风险提示弹窗（确认下单时）</td></tr>
+      <tr><td>InsightPanel.vue</td><td>智能洞察面板（走势图、产品对比）</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== 七、LLM解析准确性保障 ==================== -->
+<div class="section" id="parsing-accuracy">
+  <div class="section-header">
+    <h2>七、LLM解析准确性保障</h2>
+  </div>
+  <div class="section-body">
+    <h3>7.1 五层防线</h3>
+    <div class="flow-diagram">
+用户输入 → 领域分类 → 询报价分支
+                         │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+     规则解析置信≥0.8  规则解析置信<0.8   规则解析无命中
+          │               │               │
+          ▼               ▼               ▼
+      gatekeep       LLM解析→gatekeep   追问澄清
+          │               │
+          ▼               ▼
+    必填字段完整性校验 ←────┘
+          │
+    ┌─────┼─────┐
+    ▼           ▼
+  完整       缺字段 → 追问
+    │
+    ▼
+  调询价接口
+    </div>
+
+    <h3>7.2 必填字段完整性校验</h3>
+    <div class="highlight-box danger">
+      <p><strong>核心原则：缺必填字段 → 追问，不填充默认值，不让LLM猜测。</strong></p>
+    </div>
+    <table>
+      <tr><th>产品类型</th><th>必填字段</th></tr>
+      <tr><td>即期(SPOT)</td><td>currency_pair, direction</td></tr>
+      <tr><td>远期(FWD)</td><td>currency_pair, direction, tenor</td></tr>
+      <tr><td>掉期(SWAP)</td><td>currency_pair, direction, near_tenor, far_tenor</td></tr>
+    </table>
+
+    <h3>7.3 询报价铁律（gatekeep扩展）</h3>
+    <table>
+      <tr><th>铁律</th><th>规则</th><th>理由</th></tr>
+      <tr><td>方向不可省略</td><td>direction 不能为空</td><td>结汇购汇搞反 = 交易方向错误</td></tr>
+      <tr><td>产品类型不可推断</td><td>必须由用户明确说出或上下文继承</td><td>即期和远期价格差异大</td></tr>
+      <tr><td>金额不可为0</td><td>DIRECT_TRADE 意图下金额必须 > 0</td><td>下单金额为0无意义</td></tr>
+      <tr><td>期限不可猜测</td><td>FWD/SWAP的期限必须来自用户输入或上下文</td><td>1个月和1年远期价差巨大</td></tr>
+      <tr><td>意图类型保守判定</td><td>模棱两可时优先归为SINGLE而非DIRECT_TRADE</td><td>宁可多一步确认</td></tr>
+    </table>
+
+    <h3>7.4 领域分类路由</h3>
+    <p>在LangGraph Router中增加领域分类gate：</p>
+    <table>
+      <tr><th>领域</th><th>关键词示例</th><th>分派目标</th></tr>
+      <tr><td>询报价</td><td>询价、报价、结汇、购汇、买汇、卖汇、比价、点差、成交、下单</td><td>pricing_agent</td></tr>
+      <tr><td>BI查询</td><td>交易量、笔数、分析、趋势、统计、同比、环比、套保率</td><td>bi_agent</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== 八、代客系统API接口需求 ==================== -->
+<div class="section" id="api-requirements">
+  <div class="section-header">
+    <h2>八、代客系统API接口需求</h2>
+    <span class="badge">核心依赖</span>
+  </div>
+  <div class="section-body">
+
+    <div class="highlight-box warning">
+      <p><strong>说明：</strong>以下接口需要代客系统团队提供，本系统作为调用方。接口设计建议遵循RESTful规范，返回JSON格式数据。</p>
+    </div>
+
+    <h3>8.1 询价接口</h3>
+    <div class="api-section">
+      <div class="api-header">
+        <span class="method">POST</span>
+        <span class="path">/api/v1/pricing/inquiry</span>
+      </div>
+      <div class="api-body">
+        <h4>功能说明</h4>
+        <p>根据交易要素计算报价，返回价格、点差、报价ID等信息。支持即期、远期、掉期产品。</p>
+
+        <h4>请求参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>必填</th><th>说明</th></tr>
+          <tr><td>customer_id</td><td>string</td><td>是</td><td>客户ID（代客系统客户编号）</td></tr>
+          <tr><td>product_type</td><td>string</td><td>是</td><td>产品类型：SPOT(即期) / FWD(远期) / SWAP(掉期)</td></tr>
+          <tr><td>currency_pair</td><td>string</td><td>是</td><td>货币对，如 USD/CNY</td></tr>
+          <tr><td>direction</td><td>string</td><td>是</td><td>方向：B(银行买入/客户结汇) / S(银行卖出/客户购汇)</td></tr>
+          <tr><td>amount</td><td>decimal</td><td>否</td><td>金额（外币金额），不传则返回标准报价</td></tr>
+          <tr><td>tenor</td><td>string</td><td>远期必填</td><td>期限，如 1M / 3M / 6M / 1Y</td></tr>
+          <tr><td>near_tenor</td><td>string</td><td>掉期必填</td><td>近端期限</td></tr>
+          <tr><td>far_tenor</td><td>string</td><td>掉期必填</td><td>远端期限</td></tr>
+          <tr><td>value_date</td><td>date</td><td>否</td><td>指定交割日期（远期/掉期），不传则按标准期限推算</td></tr>
+          <tr><td>request_id</td><td>string</td><td>否</td><td>请求ID，用于幂等和追踪</td></tr>
+        </table>
+
+        <h4>返回参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>说明</th></tr>
+          <tr><td>quote_id</td><td>string</td><td>报价ID（唯一标识，用于后续交易确认）</td></tr>
+          <tr><td>customer_rate</td><td>decimal</td><td>客户成交价（已含点差）</td></tr>
+          <tr><td>market_rate</td><td>decimal</td><td>市场中间价（可选，用于展示）</td></tr>
+          <tr><td>spread_bp</td><td>integer</td><td>点差（基点）</td></tr>
+          <tr><td>product_type</td><td>string</td><td>产品类型</td></tr>
+          <tr><td>currency_pair</td><td>string</td><td>货币对</td></tr>
+          <tr><td>direction</td><td>string</td><td>方向</td></tr>
+          <tr><td>amount</td><td>decimal</td><td>金额（如果请求中传了）</td></tr>
+          <tr><td>value_date</td><td>date</td><td>交割日期</td></tr>
+          <tr><td>created_at</td><td>datetime</td><td>报价时间</td></tr>
+        </table>
+
+        <h4>返回示例</h4>
+        <div class="code-block">
+{
+  "code": "SUCCESS",
+  "message": "报价成功",
+  "data": {
+    "quote_id": "QT20260519143005001",
+    "customer_rate": 7.2450,
+    "market_rate": 7.2400,
+    "spread_bp": 50,
+    "product_type": "SPOT",
+    "currency_pair": "USD/CNY",
+    "direction": "S",
+    "value_date": "2026-05-21",
+    "created_at": "2026-05-19T14:30:05"
+  }
+}
+        </div>
+
+        <h4>错误码</h4>
+        <table class="field-table">
+          <tr><th>错误码</th><th>说明</th></tr>
+          <tr><td>CUSTOMER_NOT_FOUND</td><td>客户不存在</td></tr>
+          <tr><td>CUSTOMER_FROZEN</td><td>客户账户已冻结</td></tr>
+          <tr><td>INVALID_PRODUCT</td><td>不支持的产品类型</td></tr>
+          <tr><td>INVALID_CURRENCY</td><td>不支持的货币对</td></tr>
+          <tr><td>MARKET_CLOSED</td><td>市场休市，无法报价</td></tr>
+          <tr><td>SYSTEM_ERROR</td><td>系统异常</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <h3>8.2 交易接口</h3>
+    <div class="api-section">
+      <div class="api-header">
+        <span class="method">POST</span>
+        <span class="path">/api/v1/trade/execute</span>
+      </div>
+      <div class="api-body">
+        <h4>功能说明</h4>
+        <p>根据报价ID执行交易，同步返回成交结果。系统内部完成授信检查、限额检查。</p>
+
+        <h4>请求参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>必填</th><th>说明</th></tr>
+          <tr><td>quote_id</td><td>string</td><td>是</td><td>报价ID（来自询价接口返回）</td></tr>
+          <tr><td>customer_id</td><td>string</td><td>是</td><td>客户ID</td></tr>
+          <tr><td>amount</td><td>decimal</td><td>否</td><td>成交金额（若与询价时不同则重新计算）</td></tr>
+          <tr><td>request_id</td><td>string</td><td>否</td><td>请求ID，用于幂等</td></tr>
+        </table>
+
+        <h4>返回参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>说明</th></tr>
+          <tr><td>trade_id</td><td>string</td><td>交易编号</td></tr>
+          <tr><td>quote_id</td><td>string</td><td>报价ID</td></tr>
+          <tr><td>customer_id</td><td>string</td><td>客户ID</td></tr>
+          <tr><td>product_type</td><td>string</td><td>产品类型</td></tr>
+          <tr><td>currency_pair</td><td>string</td><td>货币对</td></tr>
+          <tr><td>direction</td><td>string</td><td>方向</td></tr>
+          <tr><td>amount</td><td>decimal</td><td>成交金额</td></tr>
+          <tr><td>executed_rate</td><td>decimal</td><td>成交价格</td></tr>
+          <tr><td>value_date</td><td>date</td><td>交割日期</td></tr>
+          <tr><td>executed_at</td><td>datetime</td><td>成交时间</td></tr>
+        </table>
+
+        <h4>成功返回示例</h4>
+        <div class="code-block">
+{
+  "code": "SUCCESS",
+  "message": "交易成功",
+  "data": {
+    "trade_id": "FX20260519143008001",
+    "quote_id": "QT20260519143005001",
+    "customer_id": "CUST001",
+    "product_type": "SPOT",
+    "currency_pair": "USD/CNY",
+    "direction": "S",
+    "amount": 100000.00,
+    "executed_rate": 7.2450,
+    "value_date": "2026-05-21",
+    "executed_at": "2026-05-19T14:30:08"
+  }
+}
+        </div>
+
+        <h4>拒绝返回示例</h4>
+        <div class="code-block">
+{
+  "code": "TRADE_REJECTED",
+  "message": "交易被拒绝",
+  "data": {
+    "quote_id": "QT20260519143005001",
+    "reject_code": "CREDIT_EXCEEDED",
+    "reject_reason": "可用授信额度不足",
+    "available_credit": 5000000.00,
+    "required_credit": 7245000.00
+  }
+}
+        </div>
+
+        <h4>错误码/拒绝码</h4>
+        <table class="field-table">
+          <tr><th>错误码</th><th>说明</th><th>客户提示文案</th></tr>
+          <tr><td>CREDIT_EXCEEDED</td><td>授信额度不足</td><td>当前可用授信额度不足，请联系客户经理调整</td></tr>
+          <tr><td>LIMIT_EXCEEDED</td><td>交易限额超限</td><td>超出单笔/日累计交易限额</td></tr>
+          <tr><td>CUSTOMER_FROZEN</td><td>客户账户冻结</td><td>客户账户状态异常，请联系客户经理</td></tr>
+          <tr><td>QUOTE_EXPIRED</td><td>报价已过期</td><td>报价已过期，请重新询价</td></tr>
+          <tr><td>QUOTE_NOT_FOUND</td><td>报价不存在</td><td>报价信息不存在，请重新询价</td></tr>
+          <tr><td>AMOUNT_MISMATCH</td><td>金额不匹配</td><td>成交金额与报价金额不一致</td></tr>
+          <tr><td>SYSTEM_ERROR</td><td>系统异常</td><td>系统异常，请稍后重试</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <h3>8.3 客户信息查询接口</h3>
+    <div class="api-section">
+      <div class="api-header">
+        <span class="method">GET</span>
+        <span class="path">/api/v1/customer/{customer_id}</span>
+      </div>
+      <div class="api-body">
+        <h4>功能说明</h4>
+        <p>查询客户基本信息、风险等级、账户状态等。用于风险提示门控和客户画像。</p>
+
+        <h4>返回参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>说明</th></tr>
+          <tr><td>customer_id</td><td>string</td><td>客户ID</td></tr>
+          <tr><td>customer_name</td><td>string</td><td>客户名称</td></tr>
+          <tr><td>customer_type</td><td>string</td><td>客户类型：PROFESSIONAL(专业) / NORMAL(普通) / NOVICE(小白)</td></tr>
+          <tr><td>risk_level</td><td>string</td><td>风险等级：CONSERVATIVE(保守) / BALANCED(稳健) / AGGRESSIVE(进取)</td></tr>
+          <tr><td>account_status</td><td>string</td><td>账户状态：ACTIVE(正常) / FROZEN(冻结) / CLOSED(销户)</td></tr>
+          <tr><td>credit_limit</td><td>decimal</td><td>授信额度</td></tr>
+          <tr><td>credit_used</td><td>decimal</td><td>已用授信</td></tr>
+          <tr><td>single_limit</td><td>decimal</td><td>单笔限额</td></tr>
+          <tr><td>daily_limit</td><td>decimal</td><td>日累计限额</td></tr>
+          <tr><td>daily_used</td><td>decimal</td><td>今日已用额度</td></tr>
+        </table>
+
+        <h4>返回示例</h4>
+        <div class="code-block">
+{
+  "code": "SUCCESS",
+  "data": {
+    "customer_id": "CUST001",
+    "customer_name": "杭州某科技有限公司",
+    "customer_type": "NORMAL",
+    "risk_level": "BALANCED",
+    "account_status": "ACTIVE",
+    "credit_limit": 10000000.00,
+    "credit_used": 3000000.00,
+    "single_limit": 5000000.00,
+    "daily_limit": 20000000.00,
+    "daily_used": 8000000.00
+  }
+}
+        </div>
+      </div>
+    </div>
+
+    <h3>8.4 交易历史查询接口（可选，用于智能洞察）</h3>
+    <div class="api-section">
+      <div class="api-header">
+        <span class="method">GET</span>
+        <span class="path">/api/v1/customer/{customer_id}/trades</span>
+      </div>
+      <div class="api-body">
+        <h4>功能说明</h4>
+        <p>查询客户历史交易记录，用于智能洞察引擎分析客户偏好和交易习惯。</p>
+
+        <h4>请求参数（Query String）</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>说明</th></tr>
+          <tr><td>start_date</td><td>date</td><td>开始日期</td></tr>
+          <tr><td>end_date</td><td>date</td><td>结束日期</td></tr>
+          <tr><td>product_type</td><td>string</td><td>产品类型筛选（可选）</td></tr>
+          <tr><td>page</td><td>int</td><td>页码，默认1</td></tr>
+          <tr><td>page_size</td><td>int</td><td>每页条数，默认20</td></tr>
+        </table>
+
+        <h4>返回参数</h4>
+        <table class="field-table">
+          <tr><th>字段名</th><th>类型</th><th>说明</th></tr>
+          <tr><td>trades</td><td>array</td><td>交易列表</td></tr>
+          <tr><td>trades[].trade_id</td><td>string</td><td>交易编号</td></tr>
+          <tr><td>trades[].product_type</td><td>string</td><td>产品类型</td></tr>
+          <tr><td>trades[].currency_pair</td><td>string</td><td>货币对</td></tr>
+          <tr><td>trades[].direction</td><td>string</td><td>方向</td></tr>
+          <tr><td>trades[].amount</td><td>decimal</td><td>成交金额</td></tr>
+          <tr><td>trades[].executed_rate</td><td>decimal</td><td>成交价格</td></tr>
+          <tr><td>trades[].executed_at</td><td>datetime</td><td>成交时间</td></tr>
+          <tr><td>total</td><td>int</td><td>总条数</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <h3>8.5 接口调用要求汇总</h3>
+    <table>
+      <tr><th>接口</th><th>调用时机</th><th>超时要求</th><th>重试策略</th></tr>
+      <tr><td>询价接口</td><td>用户发起询价时</td><td>5秒</td><td>超时不重试，提示用户稍后重试</td></tr>
+      <tr><td>交易接口</td><td>用户确认下单时</td><td>10秒</td><td>超时不重试，提示用户稍后重试</td></tr>
+      <tr><td>客户信息查询</td><td>询价前、下单前</td><td>3秒</td><td>失败可降级（不阻断询价）</td></tr>
+      <tr><td>交易历史查询</td><td>生成智能洞察时</td><td>5秒</td><td>失败则不展示洞察</td></tr>
+    </table>
+
+    <div class="highlight-box">
+      <p><strong>认证方式：</strong>建议使用 API Key + 签名验证，或 OAuth2.0。具体认证方案由代客系统团队确定，本系统配合实现。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 九、实现计划 ==================== -->
+<div class="section" id="implementation">
+  <div class="section-header">
+    <h2>九、实现计划</h2>
+  </div>
+  <div class="section-body">
+    <h3>实现顺序</h3>
+    <div class="phase-timeline">
+      <div class="phase-item">
+        <h4>Phase 1：基础设施</h4>
+        <ul>
+          <li>event_bus.py — 进程内事件总线</li>
+          <li>pricing/ 目录骨架</li>
+          <li>mysql_store 扩展 — pricing_sessions、pricing_audit_log 表</li>
+          <li>semantic_rules.json 扩展 — pricing 规则配置</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 2：询报价核心</h4>
+        <ul>
+          <li>engine_client.py — 代客系统接口适配器</li>
+          <li>state_machine.py — 报价生命周期状态机</li>
+          <li>pricing_rules.py + validator.py — 规则与校验</li>
+          <li>service.py — SINGLE/MULTI 意图处理</li>
+          <li>routes.py — API 路由</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 3：比价与情景分析</h4>
+        <ul>
+          <li>service.py 扩展 — COMPARE/SCENARIO 意图</li>
+          <li>batch_inquiry 并发询价逻辑</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 4：交易流程</h4>
+        <ul>
+          <li>trade_executor.py — 下单执行</li>
+          <li>risk_guard.py — 风控校验与风险提示</li>
+          <li>DIRECT_TRADE 意图处理</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 5：客户智能洞察</h4>
+        <ul>
+          <li>insight_engine.py — 洞察引擎</li>
+          <li>事件订阅：quote.created、trade.executed</li>
+          <li>走势图数据获取（对接市场数据源）</li>
+          <li>产品对比推荐逻辑</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 6：前端实现</h4>
+        <ul>
+          <li>PricingCard.vue — 报价卡片</li>
+          <li>QuoteCountdown.vue — 倒计时</li>
+          <li>ScenarioCompare.vue — 对比表</li>
+          <li>RiskDisclosure.vue — 风险提示</li>
+          <li>InsightPanel.vue — 智能洞察面板</li>
+          <li>App.vue 对接</li>
+        </ul>
+      </div>
+      <div class="phase-item">
+        <h4>Phase 7：交互增强</h4>
+        <ul>
+          <li>context_inherit.py — 询报价上下文继承</li>
+          <li>Router 领域分类 gate</li>
+          <li>术语解释 + 客户引导</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>文件清单</h3>
+    <table>
+      <tr><th>文件</th><th>类型</th><th>说明</th></tr>
+      <tr><td>backend/event_bus.py</td><td>新增</td><td>进程内事件总线</td></tr>
+      <tr><td>backend/pricing/routes.py</td><td>新增</td><td>询报价API路由</td></tr>
+      <tr><td>backend/pricing/service.py</td><td>新增</td><td>询报价业务编排</td></tr>
+      <tr><td>backend/pricing/engine_client.py</td><td>新增</td><td>代客系统接口适配器</td></tr>
+      <tr><td>backend/pricing/state_machine.py</td><td>新增</td><td>报价生命周期状态机</td></tr>
+      <tr><td>backend/pricing/risk_guard.py</td><td>新增</td><td>风控校验+风险提示</td></tr>
+      <tr><td>backend/pricing/trade_executor.py</td><td>新增</td><td>交易下单执行</td></tr>
+      <tr><td>backend/pricing/insight_engine.py</td><td>新增</td><td>客户智能洞察</td></tr>
+      <tr><td>backend/pricing/context_inherit.py</td><td>新增</td><td>询报价上下文继承</td></tr>
+      <tr><td>backend/pricing/validator.py</td><td>新增</td><td>必填字段完整性校验</td></tr>
+      <tr><td>backend/pricing/pricing_rules.py</td><td>新增</td><td>询报价规则+prompt</td></tr>
+      <tr><td>backend/langgraph/router.py</td><td>修改</td><td>增加领域分类gate</td></tr>
+      <tr><td>backend/knowledge_base/semantic_rules.json</td><td>修改</td><td>增加pricing规则</td></tr>
+      <tr><td>backend/db/mysql_store.py</td><td>修改</td><td>增加询报价相关表</td></tr>
+      <tr><td>frontend/src/components/PricingCard.vue</td><td>新增</td><td>报价结果卡片</td></tr>
+      <tr><td>frontend/src/components/QuoteCountdown.vue</td><td>新增</td><td>有效期倒计时</td></tr>
+      <tr><td>frontend/src/components/ScenarioCompare.vue</td><td>新增</td><td>比价/情景对比表</td></tr>
+      <tr><td>frontend/src/components/RiskDisclosure.vue</td><td>新增</td><td>风险提示弹窗</td></tr>
+      <tr><td>frontend/src/components/InsightPanel.vue</td><td>新增</td><td>智能洞察面板</td></tr>
+      <tr><td>frontend/src/api.js</td><td>修改</td><td>增加询报价API调用</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-body">
+    <p style="text-align:center;color:var(--gray-500);font-size:12px;">
+      文档版本：v1.0 | 更新日期：2026-05-19 | 状态：待内部评估确认
+    </p>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
