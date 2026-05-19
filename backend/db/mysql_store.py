@@ -918,11 +918,11 @@ def save_pricing_session(record: dict) -> None:
                 """INSERT INTO pricing_sessions
                    (id, session_id, status, intent_type, inquiry_params,
                     quote_results, quote_id, valid_until, trade_result,
-                    trade_error, customer_id)
+                    trade_error, customer_id, last_activity)
                    VALUES (%(id)s, %(session_id)s, %(status)s, %(intent_type)s,
                            %(inquiry_params)s, %(quote_results)s, %(quote_id)s,
                            %(valid_until)s, %(trade_result)s, %(trade_error)s,
-                           %(customer_id)s)
+                           %(customer_id)s, %(last_activity)s)
                    ON DUPLICATE KEY UPDATE
                      status=VALUES(status),
                      quote_results=VALUES(quote_results),
@@ -930,6 +930,7 @@ def save_pricing_session(record: dict) -> None:
                      valid_until=VALUES(valid_until),
                      trade_result=VALUES(trade_result),
                      trade_error=VALUES(trade_error),
+                     last_activity=VALUES(last_activity),
                      updated_at=CURRENT_TIMESTAMP""",
                 record
             )

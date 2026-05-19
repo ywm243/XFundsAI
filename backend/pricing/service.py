@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -57,6 +58,8 @@ class PricingService:
         self.validity_minutes = validity_minutes
         # 情景配置：SCENARIO 模式下使用的期限列表
         self._scenarios: list[str] = ["1M", "3M", "6M", "1Y"]
+        # 会话超时时间（分钟）
+        self._session_timeout: int = 5
         # 运行中报价的状态机缓存 pricing_id → PricingStateMachine
         self._state_machines: dict[str, PricingStateMachine] = {}
 
@@ -65,12 +68,20 @@ class PricingService:
     # ------------------------------------------------------------------
 
     def configure(self, scenarios: list[str] | None = None,
-                  validity_minutes: int | None = None) -> None:
-        """配置情景期限列表和报价有效期"""
+                  validity_minutes: int | None = None,
+                  compliance_config: dict | None = None) -> None:
+        """配置情景期限列表、报价有效期及合规风控参数"""
         if scenarios is not None:
             self._scenarios = scenarios
         if validity_minutes is not None:
             self.validity_minutes = validity_minutes
+        if compliance_config:
+            self.risk_guard.configure(
+                thresholds=compliance_config.get("amount_thresholds", {}),
+                rate_limit=compliance_config.get("rate_limit_seconds", 5),
+                session_timeout=compliance_config.get("session_timeout_minutes", 5),
+            )
+            self._session_timeout = compliance_config.get("session_timeout_minutes", 5)
 
     async def handle_inquiry(
         self,
@@ -83,10 +94,18 @@ class PricingService:
     ) -> dict:
         """处理询价请求
 
-        流程：上下文继承 → 必填字段校验 → 风控预检 → 构建询价参数
-              → 并发询价 → 风控后检 → 状态机QUOTED → 保存会话
-              → 发布事件 → 格式化返回
+        流程：会话超时检查 → 上下文继承 → 必填字段校验 → 沙盒检测
+              → 构建询价参数 → 风控预检 → 并发询价 → 风控后检
+              → 状态机QUOTED → 保存会话 → 审计日志 → 发布事件
+              → 格式化返回
         """
+        # 0. 会话超时检查
+        if self.check_session_timeout(session_id):
+            return {
+                "mode": "session_timeout",
+                "reason": "会话已超时，请重新输入询价指令。",
+            }
+
         # 1. 上下文继承
         intent = inherit_pricing_context(intent, context)
 
@@ -103,13 +122,10 @@ class PricingService:
                 "follow_up": validation.follow_up,
             }
 
-        # 3. 风控预检
-        pre_ok, pre_reason = self.risk_guard.pre_check(customer_id, customer_info)
-        if not pre_ok:
-            return {
-                "mode": "pricing_rejected",
-                "reason": pre_reason,
-            }
+        # 3. 沙盒模式检测（规则2）
+        is_sandbox = getattr(intent, 'sandbox', False) or any(
+            kw in text for kw in ['模拟', '体验', '试算', '测试']
+        )
 
         # 4. 构建询价参数
         params_list = self._build_inquiry_params(intent, customer_id)
@@ -119,7 +135,16 @@ class PricingService:
                 "reason": "无法构建询价参数，请检查产品类型和必填字段",
             }
 
-        # 5. 创建状态机 + pricing_id
+        # 5. 风控预检（含金额阈值，规则1）
+        ok, reason = self.risk_guard.pre_check(
+            customer_id, customer_info,
+            product_type=intent.product_type,
+            amount=params_list[0].amount or 0 if params_list else 0,
+        )
+        if not ok:
+            return {"mode": "rejected", "reject_reason": reason}
+
+        # 6. 创建状态机 + pricing_id
         pricing_id = str(uuid.uuid4())
         sm = PricingStateMachine(validity_minutes=self.validity_minutes)
         self._state_machines[pricing_id] = sm
@@ -127,10 +152,10 @@ class PricingService:
         # IDLE → QUOTING
         sm.transition("QUOTING")
 
-        # 6. 并发询价
+        # 7. 并发询价
         quotes = await self.engine_client.batch_inquiry(params_list)
 
-        # 7. 风控后检 — 检查第一个有效报价
+        # 8. 风控后检 — 检查第一个有效报价
         for q in quotes:
             post_ok, post_reason = self.risk_guard.post_check(q)
             if not post_ok:
@@ -151,10 +176,10 @@ class PricingService:
                     "pricing_id": pricing_id,
                 }
 
-        # 8. QUOTING → QUOTED
+        # 9. QUOTING → QUOTED
         sm.transition("QUOTED", validity_minutes=self.validity_minutes)
 
-        # 9. 保存会话
+        # 10. 保存会话
         valid_until_str = (
             sm.valid_until.isoformat() if sm.valid_until else None
         )
@@ -169,12 +194,30 @@ class PricingService:
             valid_until=valid_until_str,
         )
 
-        # 10. 发布事件
+        # 11. 审计日志（规则13 + 14：电子证据哈希）
+        inquiry_detail = {
+            "intent_type": intent.intent_type.value,
+            "product_type": intent.product_type,
+            "quote_count": len(quotes),
+            "sandbox": is_sandbox,
+        }
+        evidence_payload = (
+            f"{pricing_id}|INQUIRY|{json.dumps(inquiry_detail, sort_keys=True)}"
+            f"|{datetime.now().isoformat()}"
+        )
+        evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
+        mysql_store.add_pricing_audit(
+            pricing_id, "INQUIRY", inquiry_detail,
+            evidence_hash=evidence_hash,
+            evidence_type="quote",
+        )
+
+        # 12. 发布事件
         await bus.publish("quote.created", pricing_id=pricing_id,
                           customer_id=customer_id,
                           quote_count=len(quotes))
 
-        # 11. 格式化返回
+        # 13. 格式化返回
         need_disclosure = self.risk_guard.need_risk_disclosure(
             customer_info, intent.product_type
         )
@@ -183,13 +226,20 @@ class PricingService:
             if need_disclosure
             else None
         )
-        return self._format_inquiry_response(
+        response = self._format_inquiry_response(
             intent=intent,
             quotes=quotes,
             pricing_id=pricing_id,
             valid_until=valid_until_str,
             risk_disclosure=risk_disclosure,
         )
+
+        # 沙盒模式标记（规则2）
+        if is_sandbox:
+            response["sandbox_mode"] = True
+            response["show_trade_button"] = False
+
+        return response
 
     async def handle_confirm_trade(
         self,
@@ -273,11 +323,20 @@ class PricingService:
             },
         )
 
-        # 8. 审计日志
+        # 8. 审计日志（规则13 + 14：电子证据哈希）
+        action_label = "TRADE_CONFIRMED" if trade_result.success else "TRADE_FAILED"
+        evidence_payload = (
+            f"{pricing_id}|{action_label}"
+            f"|{json.dumps(trade_result_dict, sort_keys=True)}"
+            f"|{datetime.now().isoformat()}"
+        )
+        evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
-            action="TRADE_CONFIRMED" if trade_result.success else "TRADE_FAILED",
+            action=action_label,
             detail=trade_result_dict,
+            evidence_hash=evidence_hash,
+            evidence_type="trade_confirm",
         )
 
         # 9. 发布事件
@@ -367,11 +426,20 @@ class PricingService:
             valid_until=valid_until_str,
         )
 
-        # 审计
+        # 审计（规则13 + 14：电子证据哈希）
+        refresh_detail = {"quote_count": len(quotes)}
+        evidence_payload = (
+            f"{pricing_id}|REFRESHED"
+            f"|{json.dumps(refresh_detail, sort_keys=True)}"
+            f"|{datetime.now().isoformat()}"
+        )
+        evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
             action="REFRESHED",
-            detail={"quote_count": len(quotes)},
+            detail=refresh_detail,
+            evidence_hash=evidence_hash,
+            evidence_type="quote_refresh",
         )
 
         # 发布事件
@@ -422,11 +490,20 @@ class PricingService:
             valid_until=None,
         )
 
-        # 审计
+        # 审计（规则13 + 14：电子证据哈希）
+        cancel_detail = {}
+        evidence_payload = (
+            f"{pricing_id}|CANCELLED"
+            f"|{json.dumps(cancel_detail, sort_keys=True)}"
+            f"|{datetime.now().isoformat()}"
+        )
+        evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
             action="CANCELLED",
-            detail={},
+            detail=cancel_detail,
+            evidence_hash=evidence_hash,
+            evidence_type="cancel",
         )
 
         # 发布事件
@@ -441,6 +518,17 @@ class PricingService:
     # 内部方法
     # ------------------------------------------------------------------
 
+    def check_session_timeout(self, session_id: str) -> bool:
+        """检查会话是否超时（规则6）"""
+        try:
+            active = mysql_store.get_active_pricing_session(session_id)
+            if active and active.get("last_activity"):
+                elapsed = (datetime.now() - active["last_activity"]).total_seconds()
+                return elapsed > self._session_timeout * 60
+        except Exception:
+            pass
+        return False
+
     def _build_inquiry_params(self, intent: PricingIntent,
                               customer_id: str) -> list[InquiryParams]:
         """根据意图类型构建询价参数列表
@@ -454,6 +542,32 @@ class PricingService:
         it = intent.intent_type
 
         if it == IntentType.SINGLE or it == IntentType.DIRECT_TRADE:
+            # 双边报价（规则4）：direction 为空时同时询 B + S
+            if it == IntentType.SINGLE and not intent.direction:
+                return [
+                    InquiryParams(
+                        customer_id=customer_id,
+                        product_type=intent.product_type,
+                        currency_pair=intent.currency_pair,
+                        direction="B",
+                        amount=intent.amount,
+                        tenor=intent.tenor,
+                        near_tenor=intent.near_tenor,
+                        far_tenor=intent.far_tenor,
+                        request_id=str(uuid.uuid4()),
+                    ),
+                    InquiryParams(
+                        customer_id=customer_id,
+                        product_type=intent.product_type,
+                        currency_pair=intent.currency_pair,
+                        direction="S",
+                        amount=intent.amount,
+                        tenor=intent.tenor,
+                        near_tenor=intent.near_tenor,
+                        far_tenor=intent.far_tenor,
+                        request_id=str(uuid.uuid4()),
+                    ),
+                ]
             return [InquiryParams(
                 customer_id=customer_id,
                 product_type=intent.product_type,
@@ -596,6 +710,7 @@ class PricingService:
                 else None
             ),
             "customer_id": customer_id,
+            "last_activity": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         # mysql_store 是同步的，在线程池中执行以避免阻塞事件循环
         loop = asyncio.get_running_loop()
@@ -633,6 +748,10 @@ class PricingService:
         # DIRECT_TRADE 额外设置 show_trade_button
         if intent.intent_type == IntentType.DIRECT_TRADE:
             response["show_trade_button"] = True
+
+        # 双边报价信号（规则4）：2条报价且无指定方向时告知前端展示双边
+        if len(quotes) == 2 and not intent.direction:
+            response["intent_params"] = {"direction": ""}
 
         # 风险披露
         if risk_disclosure:
