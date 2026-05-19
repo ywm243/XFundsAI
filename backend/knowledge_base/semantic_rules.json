@@ -396,6 +396,42 @@
     "default": null
   },
 
+  "profit_type": {
+    "_description": "利润类型映射 — 分行利润通过DOWNLOADKEYINT关联交易表(PROFITSTATE=0)，客户损益通过DOWNLOADKEY关联交易表(PROFITSTATE=2)。GROUPTYPE=0(代客交易)，TRADESTATUS=0(正常)。",
+    "rules": [
+      {
+        "keywords": ["分行损益", "分行收入", "分行支出", "分行盈利", "分行亏损", "分行中收", "分行利润"],
+        "profit_category": "branch",
+        "profit_state": 0,
+        "group_type": 0,
+        "join_key": "DOWNLOADKEYINT",
+        "description": "分行利润 — PROFITSTATE=0, GROUPTYPE=0, 通过DOWNLOADKEYINT关联交易表"
+      },
+      {
+        "keywords": ["客户损益", "客户利润", "客户亏损", "客户盈利", "客户收入", "客户支出"],
+        "profit_category": "customer",
+        "profit_state": 2,
+        "group_type": 0,
+        "join_key": "DOWNLOADKEY",
+        "description": "客户损益 — PROFITSTATE=2, GROUPTYPE=0, 通过DOWNLOADKEY关联交易表"
+      }
+    ],
+    "default": null
+  },
+
+  "lifecycle_status": {
+    "_description": "交易生命周期状态映射 — 基于交割表和到期日判断。逾期属于生命周期状态，非特殊状态。",
+    "field": "LIFECYCLE_STATUS",
+    "rules": [
+      { "keywords": ["未到期交易量", "未到期交易", "未到期"], "value": "not_due", "meaning": "未到期" },
+      { "keywords": ["逾期交易量", "逾期交易", "逾期"], "value": "overdue", "meaning": "逾期" },
+      { "keywords": ["已到期交易", "到期交易", "已到期"], "value": "due_today", "meaning": "已到期" },
+      { "keywords": ["未完结交易", "未结清", "未了结", "未完结"], "value": "unclosed", "meaning": "未完结" },
+      { "keywords": ["已完结交易", "已结清", "已了结", "完结交易", "已完结"], "value": "closed", "meaning": "已完结" }
+    ],
+    "default": null
+  },
+
   "dimension_labels": {
     "_description": "维度配置 — 显示标签、SQL列别名、JOIN逻辑（可经由Admin Rules系统动态配置）",
     "rules": [
@@ -436,5 +472,70 @@
     "format": "YYYYMMDD",
     "meaning": "交易日",
     "usage": "日期范围筛选条件，查询时需将标准日期转换为 YYYYMMDD 格式的整数比较"
+  },
+
+  "pricing": {
+    "_description": "询报价规则 — 产品必填字段、预设情景、报价有效期、术语解释",
+    "quote_validity_minutes": 5,
+    "product_params": {
+      "SPOT":  {"required_fields": ["currency_pair", "direction"]},
+      "FWD":   {"required_fields": ["currency_pair", "direction", "tenor"]},
+      "SWAP":  {"required_fields": ["currency_pair", "direction", "near_tenor", "far_tenor"]}
+    },
+    "scenarios": {
+      "远期期限对比": {
+        "description": "对比不同期限远期价格",
+        "params_variations": [
+          {"product_type": "FWD", "tenor": "1M"},
+          {"product_type": "FWD", "tenor": "3M"},
+          {"product_type": "FWD", "tenor": "6M"},
+          {"product_type": "FWD", "tenor": "1Y"}
+        ]
+      },
+      "即远期对比": {
+        "description": "对比即期与远期价格",
+        "params_variations": [
+          {"product_type": "SPOT"},
+          {"product_type": "FWD", "tenor": "3M"}
+        ]
+      },
+      "方向对比": {
+        "description": "对比结汇与购汇价格",
+        "params_variations": [
+          {"product_type": null, "direction": "B"},
+          {"product_type": null, "direction": "S"}
+        ]
+      }
+    },
+    "glossary": {
+      "点差": "银行买入价和卖出价之间的差额，也是银行提供报价服务的收益来源。点差越小，对您越有利。",
+      "远期": "约定在未来某个日期按今天确定的价格进行交割的外汇交易。适合有未来外汇收付需求的客户。",
+      "掉期": "同时进行两笔金额相同、方向相反、交割日期不同的外汇交易。常用于资金调拨或锁定汇率风险。",
+      "bp": "基点（Basis Point），1bp = 0.01%。50bp = 0.5%。",
+      "交割": "外汇交易双方按约定的汇率和金额实际收付货币的行为。"
+    },
+    "risk_disclosure": {
+      "FWD": {
+        "title": "远期结售汇风险提示",
+        "items": [
+          "汇率波动可能导致实际成本与预期不同",
+          "提前平仓可能产生额外费用",
+          "到期必须履约交割"
+        ]
+      },
+      "SWAP": {
+        "title": "外汇掉期风险提示",
+        "items": [
+          "近端和远端两次交割均需履约",
+          "掉期定价受利率差影响",
+          "提前平仓可能产生额外费用"
+        ]
+      }
+    },
+    "routing_keywords": [
+      "询价", "报价", "结汇", "购汇", "买汇", "卖汇",
+      "比价", "点差", "成交", "下单", "多少钱",
+      "汇率", "价格", "即期", "远期", "掉期"
+    ]
   }
 }
