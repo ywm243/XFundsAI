@@ -194,6 +194,20 @@ def init_db() -> None:
                 _migrate_add_column(cur, "turns", "importance",
                                     "ALTER TABLE turns ADD COLUMN importance TINYINT DEFAULT 0")
 
+                # Migrate: compliance fields for pricing_sessions (Task 27)
+                _migrate_add_column(cur, "pricing_sessions", "last_activity",
+                                    "ALTER TABLE pricing_sessions ADD COLUMN last_activity DATETIME DEFAULT NULL")
+
+                # Migrate: compliance audit fields for pricing_audit_log (Task 27)
+                _migrate_add_column(cur, "pricing_audit_log", "engine_raw_response",
+                                    "ALTER TABLE pricing_audit_log ADD COLUMN engine_raw_response JSON")
+                _migrate_add_column(cur, "pricing_audit_log", "llm_decision_steps",
+                                    "ALTER TABLE pricing_audit_log ADD COLUMN llm_decision_steps JSON")
+                _migrate_add_column(cur, "pricing_audit_log", "evidence_hash",
+                                    "ALTER TABLE pricing_audit_log ADD COLUMN evidence_hash VARCHAR(64)")
+                _migrate_add_column(cur, "pricing_audit_log", "evidence_type",
+                                    "ALTER TABLE pricing_audit_log ADD COLUMN evidence_type VARCHAR(32)")
+
             conn.commit()
             logger.info("MySQL database initialized at %s:%s/%s",
                         _config.host, _config.port, _config.database)
@@ -959,15 +973,24 @@ def get_active_pricing_session(session_id: str) -> dict | None:
 
 
 def add_pricing_audit(pricing_id: str, action: str, detail: dict,
-                      actor: str = "CUSTOMER") -> None:
+                      actor: str = "CUSTOMER",
+                      engine_raw: dict | None = None,
+                      llm_steps: list | None = None,
+                      evidence_hash: str = "",
+                      evidence_type: str = "") -> None:
     """写入合规审计日志"""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO pricing_audit_log (pricing_id, action, actor, detail)
-                   VALUES (%s, %s, %s, %s)""",
-                (pricing_id, action, actor, json.dumps(detail, ensure_ascii=False))
+                """INSERT INTO pricing_audit_log (pricing_id, action, actor, detail,
+                   engine_raw_response, llm_decision_steps, evidence_hash, evidence_type)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (pricing_id, action, actor,
+                 json.dumps(detail, ensure_ascii=False),
+                 json.dumps(engine_raw, ensure_ascii=False) if engine_raw else None,
+                 json.dumps(llm_steps, ensure_ascii=False) if llm_steps else None,
+                 evidence_hash, evidence_type)
             )
         conn.commit()
     finally:
