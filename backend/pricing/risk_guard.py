@@ -2,25 +2,56 @@
 """风控校验 + 风险提示生成"""
 
 from __future__ import annotations
+
+import json
+import time
 from typing import Optional
 
 from .models import QuoteResult
-from .pricing_rules import RISK_REJECT_REASONS, REJECTION_TEMPLATES
+from .pricing_rules import REJECTION_TEMPLATES
 
 
 class RiskGuard:
     """询报价风控校验"""
 
-    def pre_check(self, customer_id: str, customer_info: dict | None) -> tuple[bool, Optional[str]]:
-        """询价前风控预检，返回 (是否通过, 拒绝原因)"""
+    def __init__(self):
+        self._rate_cache: dict[str, float] = {}  # customer_id → last_inquiry_timestamp
+        self._rate_limit_seconds: int = 5
+        self._thresholds: dict = {"SPOT": 50000000, "FWD": 50000000, "SWAP": 50000000}
+        self._session_timeout: int = 5  # minutes
+
+    def configure(self, thresholds: dict | None = None, rate_limit: int = 5, session_timeout: int = 5):
+        if thresholds:
+            self._thresholds.update(thresholds)
+        self._rate_limit_seconds = rate_limit
+        self._session_timeout = session_timeout
+
+    def pre_check(self, customer_id: str, customer_info: dict | None,
+                  product_type: str = "", amount: float = 0) -> tuple[bool, Optional[str]]:
+        """询价前综合风控：制裁→账户→产品权限→金额阈值"""
+        ok, reason = self.check_sanctions(customer_info)
+        if not ok:
+            return False, reason
+
         if not customer_info:
             return True, None
 
         status = customer_info.get("account_status", "ACTIVE")
         if status == "FROZEN":
-            return False, RISK_REJECT_REASONS["ACCOUNT_FROZEN"]
+            return False, "客户账户状态异常，暂不支持询价服务。请联系客户经理。"
         if status == "CLOSED":
             return False, "账户已销户，暂不支持询价服务。"
+
+        if product_type:
+            ok, reason = self.check_product_permission(customer_info, product_type)
+            if not ok:
+                return False, reason
+
+        if amount > 0:
+            ok, reason = self.check_amount_threshold(amount, product_type or "SPOT")
+            if not ok:
+                return False, reason
+
         return True, None
 
     def post_check(self, quote: QuoteResult) -> tuple[bool, Optional[str]]:
@@ -79,3 +110,51 @@ class RiskGuard:
         if not customer_info:
             return True
         return customer_info.get("customer_type", "NORMAL") == "NOVICE"
+
+    def check_amount_threshold(self, amount: float, product_type: str = "SPOT") -> tuple[bool, Optional[str]]:
+        """规则1：超阈值金额转线下"""
+        threshold = self._thresholds.get(product_type, 50000000)
+        if amount > threshold:
+            label = f"大额交易（等值≥{threshold/10000:.0f}万美元）需走线下询价通道，请联系客户经理。\n如需AI快速询价，请输入较小金额后重试。"
+            return False, label
+        return True, None
+
+    def check_sanctions(self, customer_info: dict | None) -> tuple[bool, Optional[str]]:
+        """规则9第1层：制裁/黑名单"""
+        if not customer_info:
+            return True, None
+        if customer_info.get("sanctions_status") == "BLOCKED":
+            return False, "暂不支持询价服务"  # 静默拒绝，不暴露具体原因
+        return True, None
+
+    def check_product_permission(self, customer_info: dict | None, product_type: str) -> tuple[bool, Optional[str]]:
+        """规则9第3层：产品权限"""
+        if not customer_info or not product_type:
+            return True, None
+        permissions = customer_info.get("product_permissions", [])
+        if permissions and product_type not in permissions:
+            labels = {"FWD": "远期结售汇", "SWAP": "外汇掉期"}
+            return False, f"您尚未开通{labels.get(product_type, product_type)}权限，请联系客户经理开通后重试。"
+        return True, None
+
+    def check_rate_limit(self, customer_id: str) -> tuple[bool, int]:
+        """规则17：频率控制"""
+        now = time.time()
+        last = self._rate_cache.get(customer_id, 0)
+        elapsed = now - last
+        remaining = max(0, int(self._rate_limit_seconds - elapsed))
+        if elapsed < self._rate_limit_seconds:
+            return False, remaining
+        self._rate_cache[customer_id] = now
+        return True, 0
+
+    def get_rejection_guidance(self, reject_type: str) -> str:
+        """规则7：拒绝引导"""
+        GUIDANCE = {
+            "UNSUPPORTED_PRODUCT": "暂不支持该产品类型。当前支持即期、远期、掉期询价。",
+            "NON_TRADING_HOURS": "当前为非交易时段。您可以使用模拟询价体验流程。",
+            "INVESTMENT_ADVICE": "根据监管要求，我们无法提供投资建议。您可以对比不同产品的价格差异。",
+            "PRICE_PREDICTION": "我们无法预测汇率走势。如需了解不同情景下的价格差异，可使用情景分析。",
+            "AMOUNT_TOO_LARGE": "大额交易需走线下询价通道。请联系客户经理或减少金额后重试。",
+        }
+        return GUIDANCE.get(reject_type, "暂无法处理您的请求，请重新输入。")
