@@ -20,23 +20,31 @@ logger = logging.getLogger(__name__)
 _config = MySQLConfig()
 _lock = threading.Lock()
 
-_pool = PooledDB(
-    creator=pymysql,
-    maxconnections=10,
-    mincached=2,
-    cursorclass=DictCursor,
-    autocommit=False,
-    **_config.dsn,
-)
+_pool: PooledDB | None = None
 
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _get_pool() -> PooledDB:
+    """Lazily create the MySQL connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = PooledDB(
+            creator=pymysql,
+            maxconnections=10,
+            mincached=2,
+            cursorclass=DictCursor,
+            autocommit=False,
+            **_config.dsn,
+        )
+    return _pool
+
+
 def get_conn() -> pymysql.Connection:
     """Get a connection from the pool."""
-    return _pool.connection()
+    return _get_pool().connection()
 
 
 SCHEMA_SQL = """
@@ -138,6 +146,36 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     INDEX idx_agent_memory_session (session_id),
     INDEX idx_agent_memory_turn (session_id, turn_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS pricing_sessions (
+    id VARCHAR(36) PRIMARY KEY,
+    session_id VARCHAR(128) NOT NULL,
+    status VARCHAR(20) DEFAULT 'IDLE',
+    intent_type VARCHAR(20),
+    inquiry_params JSON,
+    quote_results JSON,
+    quote_id VARCHAR(64),
+    valid_until DATETIME,
+    trade_result JSON,
+    trade_error JSON,
+    customer_id VARCHAR(64) DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_session (session_id),
+    INDEX idx_status (status),
+    INDEX idx_valid (valid_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS pricing_audit_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pricing_id VARCHAR(36) NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    actor VARCHAR(32) NOT NULL DEFAULT 'CUSTOMER',
+    detail JSON,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pricing (pricing_id),
+    INDEX idx_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -583,6 +621,8 @@ def migrate_from_json(rules_path: str | None = None) -> int:
     CATEGORY_MAP: dict[str, tuple[str, str, str, str | None]] = {
         "app_id":               ("app_id",               "产品类型映射",     "common", None),
         "buy_sell_direction":    ("buy_sell_direction",    "买卖方向映射",     "common", None),
+        "lifecycle_status":      ("lifecycle_status",      "交易生命周期状态", "common", None),
+        "profit_type":           ("profit_type",           "利润类型映射",     "common", None),
         "product_type":          ("product_type",          "交易类型映射",     "common", None),
         "special_states":        ("special_trade_type",    "特殊交易类型映射", "common", "state"),
         "trade_class":           ("special_trade_type",    "特殊交易类型映射", "common", "class"),
@@ -769,6 +809,70 @@ def _seed_dimension_labels_if_missing() -> None:
         conn.close()
 
 
+def _seed_lifecycle_status_if_missing() -> None:
+    """Idempotently seed lifecycle_status category if not present."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM rule_categories WHERE category=%s AND agent_type=%s",
+                ("lifecycle_status", "common"),
+            )
+            if cur.fetchone():
+                return
+
+        rules_path = str(
+            Path(__file__).resolve().parent.parent / "knowledge_base" / "semantic_rules.json"
+        )
+        with open(rules_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        lc_data = data.get("lifecycle_status")
+        if not lc_data or "rules" not in lc_data:
+            logger.warning("lifecycle_status not found in semantic_rules.json, skipping")
+            return
+
+        rules_list = lc_data["rules"]
+        cat_id = _ensure_category(conn, "common", "lifecycle_status", "交易生命周期状态")
+        _insert_rules(conn, cat_id, rules_list)
+        conn.commit()
+        logger.info("Seeded lifecycle_status category with %d items", len(rules_list))
+    finally:
+        conn.close()
+
+
+def _seed_profit_type_if_missing() -> None:
+    """Idempotently seed profit_type category if not present."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM rule_categories WHERE category=%s AND agent_type=%s",
+                ("profit_type", "common"),
+            )
+            if cur.fetchone():
+                return
+
+        rules_path = str(
+            Path(__file__).resolve().parent.parent / "knowledge_base" / "semantic_rules.json"
+        )
+        with open(rules_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        pt_data = data.get("profit_type")
+        if not pt_data or "rules" not in pt_data:
+            logger.warning("profit_type not found in semantic_rules.json, skipping")
+            return
+
+        rules_list = pt_data["rules"]
+        cat_id = _ensure_category(conn, "common", "profit_type", "利润类型映射")
+        _insert_rules(conn, cat_id, rules_list)
+        conn.commit()
+        logger.info("Seeded profit_type category with %d items", len(rules_list))
+    finally:
+        conn.close()
+
+
 def _auto_migrate() -> None:
     init_db()
     conn = get_conn()
@@ -781,6 +885,91 @@ def _auto_migrate() -> None:
             migrate_from_json()
         else:
             _seed_dimension_labels_if_missing()
+            _seed_lifecycle_status_if_missing()
+            _seed_profit_type_if_missing()
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Pricing session / audit (used by quoting agent)
+# ============================================================
+
+def save_pricing_session(record: dict) -> None:
+    """保存/更新询报价会话"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO pricing_sessions
+                   (id, session_id, status, intent_type, inquiry_params,
+                    quote_results, quote_id, valid_until, trade_result,
+                    trade_error, customer_id)
+                   VALUES (%(id)s, %(session_id)s, %(status)s, %(intent_type)s,
+                           %(inquiry_params)s, %(quote_results)s, %(quote_id)s,
+                           %(valid_until)s, %(trade_result)s, %(trade_error)s,
+                           %(customer_id)s)
+                   ON DUPLICATE KEY UPDATE
+                     status=VALUES(status),
+                     quote_results=VALUES(quote_results),
+                     quote_id=VALUES(quote_id),
+                     valid_until=VALUES(valid_until),
+                     trade_result=VALUES(trade_result),
+                     trade_error=VALUES(trade_error),
+                     updated_at=CURRENT_TIMESTAMP""",
+                record
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_pricing_session(pricing_id: str) -> dict | None:
+    """查询询报价会话"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM pricing_sessions WHERE id = %s",
+                (pricing_id,)
+            )
+            row = cur.fetchone()
+            return row if row else None
+    finally:
+        conn.close()
+
+
+def get_active_pricing_session(session_id: str) -> dict | None:
+    """查询当前活跃的询报价会话（QUOTING/QUOTED状态且未过期）"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM pricing_sessions
+                   WHERE session_id = %s
+                   AND status IN ('QUOTING', 'QUOTED')
+                   AND (valid_until IS NULL OR valid_until > NOW())
+                   ORDER BY created_at DESC LIMIT 1""",
+                (session_id,)
+            )
+            row = cur.fetchone()
+            return row if row else None
+    finally:
+        conn.close()
+
+
+def add_pricing_audit(pricing_id: str, action: str, detail: dict,
+                      actor: str = "CUSTOMER") -> None:
+    """写入合规审计日志"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO pricing_audit_log (pricing_id, action, actor, detail)
+                   VALUES (%s, %s, %s, %s)""",
+                (pricing_id, action, actor, json.dumps(detail, ensure_ascii=False))
+            )
+        conn.commit()
     finally:
         conn.close()
 
