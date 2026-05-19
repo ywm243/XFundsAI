@@ -11,10 +11,11 @@ FOLLOW_UP_PROMPTS: dict[str, str] = {
     "far_tenor": "请问远端期限是多久？",
 }
 
+# 规则4：direction缺失 → 默认双边报价（B+S），不追问
 REQUIRED_FIELDS: dict[str, list[str]] = {
-    "SPOT":  ["currency_pair", "direction"],
-    "FWD":   ["currency_pair", "direction", "tenor"],
-    "SWAP":  ["currency_pair", "direction", "near_tenor", "far_tenor"],
+    "SPOT":  ["currency_pair"],
+    "FWD":   ["currency_pair", "tenor"],
+    "SWAP":  ["currency_pair", "near_tenor", "far_tenor"],
 }
 
 
