@@ -74,3 +74,82 @@ export async function deleteSession(sessionId) {
   const resp = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
   return resp.json()
 }
+
+// ---- Audit Log ----
+
+export async function getAuditLog(sessionId = '', limit = 50) {
+  const params = new URLSearchParams()
+  if (sessionId) params.set('session_id', sessionId)
+  params.set('limit', limit)
+  const resp = await fetch(`/api/audit-log?${params}`)
+  if (!resp.ok) return []
+  return resp.json()
+}
+
+// ---- 询报价相关 ----
+
+export async function pricingInquiry(text, intent, options = {}) {
+  const body = {
+    text,
+    intent: intent || {},
+    session_id: options.sessionId || '',
+    customer_id: options.customerId || '',
+    customer_info: options.customerInfo || null,
+    context: options.context || null,
+  }
+  const resp = await fetch('/api/pricing/inquiry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.detail || `询价失败 (${resp.status})`)
+  }
+  return resp.json()
+}
+
+export async function pricingConfirm(pricingId, options = {}) {
+  const body = {
+    pricing_id: pricingId,
+    session_id: options.sessionId || '',
+    customer_id: options.customerId || '',
+    customer_info: options.customerInfo || null,
+  }
+  const resp = await fetch('/api/pricing/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.detail || `下单失败 (${resp.status})`)
+  }
+  return resp.json()
+}
+
+export async function pricingRefresh(pricingId) {
+  const resp = await fetch('/api/pricing/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pricing_id: pricingId }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.detail || `刷新失败 (${resp.status})`)
+  }
+  return resp.json()
+}
+
+export async function pricingCancel(pricingId) {
+  const resp = await fetch('/api/pricing/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pricing_id: pricingId }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.detail || `取消失败 (${resp.status})`)
+  }
+  return resp.json()
+}
