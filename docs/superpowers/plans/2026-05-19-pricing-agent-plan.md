@@ -3016,3 +3016,276 @@ git commit -m "feat(pricing): integrate pricing flow into MessageArea and App.vu
 - `PricingService` 接口在任务12定义，任务13（路由）和任务15（LangGraph）一致调用
 - 前端 `pricing_inquiry` / `pricing_confirm` 等API函数与后端路由一致
 - 事件名常量在 `EventBus.EVENTS` 中统一定义
+
+---
+
+## Phase 8：合规风控增强（17项规则）
+
+> 基于合规评审结果，在已完成的21个任务基础上追加以下任务。
+
+---
+
+### 任务 22：更新数据模型和配置文件
+
+**文件：**
+- 修改：`backend/pricing/models.py`
+- 修改：`backend/knowledge_base/semantic_rules.json`
+
+- [ ] **步骤 1：InquiryParams 增加 sandbox 字段**
+
+```python
+# 在 InquiryParams 中添加
+sandbox: bool = False  # 模拟询价沙盒模式
+```
+
+- [ ] **步骤 2：semantic_rules.json pricing块增加合规配置**
+
+```json
+"amount_thresholds": {
+  "SPOT": 50000000,
+  "FWD": 50000000,
+  "SWAP": 50000000,
+  "_description": "等值美元金额，超过此阈值转线下询价"
+},
+"session_timeout_minutes": 5,
+"rate_limit_seconds": 5
+```
+
+- [ ] **步骤 3：验证**
+
+```bash
+cd d:/AI/XF-AI/XFundsAINext && python -c "from backend.pricing.models import InquiryParams; p=InquiryParams(sandbox=True); print(p.sandbox)" && python -c "import json; r=json.load(open('backend/knowledge_base/semantic_rules.json','r',encoding='utf-8')); print(r['pricing']['amount_thresholds']['SPOT'])"
+```
+
+- [ ] **步骤 4：Commit**
+
+---
+
+### 任务 23：扩展 risk_guard（规则1、7、9、11、17）
+
+**文件：**
+- 修改：`backend/pricing/risk_guard.py`
+
+增加以下方法：
+
+```python
+# 金额阈值检查
+def check_amount_threshold(self, amount: float, product_type: str) -> tuple[bool, str | None]:
+    """规则1：超阈值返回引导提示"""
+    threshold = self._thresholds.get(product_type, 50000000)
+    if amount > threshold:
+        return False, f"大额交易（等值≥{threshold/10000:.0f}万美元）需走线下询价通道，请联系客户经理。"
+    return True, None
+
+# 制裁/黑名单校验
+def check_sanctions(self, customer_info: dict | None) -> tuple[bool, str | None]:
+    """规则9第1层：制裁名单检查"""
+    if customer_info and customer_info.get("sanctions_status") == "BLOCKED":
+        return False, "暂不支持询价服务"  # 静默拒绝
+    return True, None
+
+# 产品权限校验
+def check_product_permission(self, customer_info: dict | None, product_type: str) -> tuple[bool, str | None]:
+    """规则9第3层：产品权限检查"""
+    if not customer_info:
+        return True, None
+    permissions = customer_info.get("product_permissions", [])
+    if product_type not in permissions:
+        labels = {"FWD": "远期结售汇", "SWAP": "外汇掉期"}
+        label = labels.get(product_type, product_type)
+        return False, f"您尚未开通{label}权限，请联系客户经理开通后重试。"
+    return True, None
+
+# 频率控制
+def check_rate_limit(self, customer_id: str) -> tuple[bool, int]:
+    """规则17：5秒内最多1个价格"""
+    now = time.time()
+    last = self._rate_cache.get(customer_id, 0)
+    elapsed = now - last
+    remaining = max(0, int(self._rate_limit_seconds - elapsed))
+    if elapsed < self._rate_limit_seconds:
+        return False, remaining
+    self._rate_cache[customer_id] = now
+    return True, 0
+
+# 完整 pre_check 重写（包含三层校验）
+async def pre_check(self, customer_id: str, customer_info: dict | None,
+                    product_type: str = "", amount: float = 0) -> tuple[bool, str | None]:
+    """询价前三层校验：制裁 → 账户状态 → 产品权限 → 金额阈值"""
+    ok, reason = self.check_sanctions(customer_info)
+    if not ok: return False, reason
+    ok, reason = self._pre_check_account(customer_id, customer_info)
+    if not ok: return False, reason
+    if product_type:
+        ok, reason = self.check_product_permission(customer_info, product_type)
+        if not ok: return False, reason
+    if amount > 0:
+        ok, reason = self.check_amount_threshold(amount, product_type)
+        if not ok: return False, reason
+    return True, None
+```
+
+- [ ] **步骤 2：Commit**
+
+---
+
+### 任务 24：更新 service.py（规则1、2、4、6、13、14）
+
+**文件：**
+- 修改：`backend/pricing/service.py`
+
+关键修改：
+
+```python
+# handle_inquiry 中增加沙盒模式处理
+if intent.sandbox:
+    # 沙盒模式：正常询价，但阻断下单
+    pass
+
+# handle_inquiry 中增加双边报价逻辑（规则4）
+if not intent.direction:
+    # 默认双边报价：并发 B + S
+    params_b = InquiryParams(**{**intent.__dict__, "direction": "B"})
+    params_s = InquiryParams(**{**intent.__dict__, "direction": "S"})
+    param_groups = [params_b, params_s]
+else:
+    param_groups = [inquiry_params]
+
+# 超时会话检查（规则6）
+def check_session_timeout(session_id: str) -> bool:
+    """检查会话是否超时"""
+    session = mysql_store.get_pricing_session(session_id)
+    if session and session.get("last_activity"):
+        elapsed = (datetime.now() - session["last_activity"]).total_seconds()
+        return elapsed > self._session_timeout
+    return False
+
+# 完整审计记录（规则13）
+def _write_full_audit(self, pricing_id: str, action: str, actor: str,
+                      detail: dict, engine_raw: dict | None = None,
+                      llm_steps: list | None = None,
+                      evidence_type: str | None = None) -> None:
+    detail_copy = dict(detail)
+    if engine_raw:
+        detail_copy["engine_raw_response"] = engine_raw
+    if llm_steps:
+        detail_copy["llm_decision_steps"] = llm_steps
+    # 电子证据哈希（规则14）
+    if evidence_type:
+        import hashlib
+        payload = f"{pricing_id}|{action}|{json.dumps(detail_copy, sort_keys=True)}|{_now()}"
+        detail_copy["evidence_hash"] = hashlib.sha256(payload.encode()).hexdigest()
+        detail_copy["evidence_type"] = evidence_type
+    mysql_store.add_pricing_audit(pricing_id, action, detail_copy, actor)
+```
+
+- [ ] **步骤 2：Commit**
+
+---
+
+### 任务 25：更新 PRICING_SYSTEM_PROMPT（规则3、7、8）
+
+**文件：**
+- 修改：`backend/pricing/pricing_rules.py`
+
+在 `PRICING_SYSTEM_PROMPT` 末尾追加：
+
+```python
+# 在 PRICING_SYSTEM_PROMPT 字符串末尾追加
+PRICING_SYSTEM_PROMPT += """
+
+合规红线（违反即拒绝服务）：
+7. 绝对不能：预测价格走势、建议交易时机、承诺收益或亏损
+8. 绝对不能：自行增减点差、计算盈亏金额、估算或编造任何价格
+9. 当客户询问投资建议时，必须礼貌拒绝并引导至产品对比或情景分析
+10. 不支持的请求类型：期权询价、结构性产品、非交易时段交易
+11. 所有价格数据必须来自内部计价引擎，引擎不可用时必须如实告知
+12. 模棱两可时，宁可追问澄清，不可猜测参数发起询价
+"""
+```
+
+- [ ] **步骤 2：Commit**
+
+---
+
+### 任务 26：更新前端组件（规则2、4、5、10、12、15、17）
+
+**文件：**
+- 修改：`frontend/src/components/PricingCard.vue`
+- 修改：`frontend/src/components/ScenarioCompare.vue`
+
+核心变更：
+
+1. **PricingCard.vue**：
+   - 沙盒蓝横幅："模拟询价 — 体验流程，不做实际交易"
+   - 双边报价展示：结汇价(左) | 购汇价(右)，各带下单按钮
+   - 数字双格式：`formatChineseAmount()` 函数 → "7.2450（柒元贰角肆分伍厘）"
+   - 保证金展示：交易成功卡片展示 margin.type + margin.amount
+   - 优惠展示："已享优惠 XXbp"
+   - 频率控制：确认/刷新按钮点击后5秒禁用+倒计时
+
+2. **ScenarioCompare.vue**：
+   - 底部固定红色横幅："模拟结果，不代表实际盈亏"
+   - 参数来源注明行："数据来源：计价引擎实时计算"
+
+- [ ] **步骤 2：前端构建验证**
+
+```bash
+cd d:/AI/XF-AI/XFundsAINext/frontend && npm run build 2>&1 | tail -5
+```
+
+- [ ] **步骤 3：Commit**
+
+---
+
+### 任务 27：扩展MySQL表和审计字段（规则6、13、14）
+
+**文件：**
+- 修改：`backend/db/mysql_store.py`
+
+在 `SCHEMA_SQL` 中追加 ALTER TABLE（在 init_db 中通过迁移执行）：
+
+```sql
+ALTER TABLE pricing_sessions ADD COLUMN IF NOT EXISTS last_activity DATETIME;
+ALTER TABLE pricing_audit_log ADD COLUMN IF NOT EXISTS engine_raw_response JSON;
+ALTER TABLE pricing_audit_log ADD COLUMN IF NOT EXISTS llm_decision_steps JSON;
+ALTER TABLE pricing_audit_log ADD COLUMN IF NOT EXISTS evidence_hash VARCHAR(64);
+ALTER TABLE pricing_audit_log ADD COLUMN IF NOT EXISTS evidence_type VARCHAR(32);
+```
+
+更新 `add_pricing_audit()` 函数签名以支持新字段：
+
+```python
+def add_pricing_audit(pricing_id: str, action: str, detail: dict,
+                      actor: str = "CUSTOMER",
+                      engine_raw: dict | None = None,
+                      llm_steps: list | None = None,
+                      evidence_hash: str = "",
+                      evidence_type: str = "") -> None:
+```
+
+- [ ] **步骤 2：Commit**
+
+---
+
+### 合规规则覆盖自检
+
+| 规则 | 对应任务 | 状态 |
+|------|---------|------|
+| 规则1 — 大额金额分级路由 | 任务22+23+24 | ✅ |
+| 规则2 — 模拟询价沙盒 | 任务22+24+26 | ✅ |
+| 规则3 — 情景分析约束 | 任务25 | ✅ |
+| 规则4 — 默认双边报价 | 任务22+24+26 | ✅ |
+| 规则5 — 关键数字双表达 | 任务26 | ✅ |
+| 规则6 — 超时会话自动结束 | 任务22+24+27 | ✅ |
+| 规则7 — 拒绝引导系统 | 任务23+25 | ✅ |
+| 规则8 — 禁止LLM操作价格 | 任务25 | ✅ |
+| 规则9 — 客户权限/制裁校验 | 任务23 | ✅ |
+| 规则10 — 下单自动计算担保 | 任务26 | ✅ |
+| 规则11 — 价格不可用处理 | 任务23+25 | ✅ |
+| 规则12 — 客户优惠展示 | 任务26 | ✅ |
+| 规则13 — 完整审计记录 | 任务24+27 | ✅ |
+| 规则14 — 电子证据留存 | 任务24+27 | ✅ |
+| 规则15 — 情景分析持续提示 | 任务26 | ✅ |
+| 规则16 — 超限额转人工 | — | 暂不实现 |
+| 规则17 — 频率控制 | 任务22+23+26 | ✅ |
