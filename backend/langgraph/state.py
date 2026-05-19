@@ -32,6 +32,10 @@ class AgentState:
     row_count: int = 0
     comparison: dict | None = None
 
+    # Pricing Agent 输出字段
+    pricing_result: dict = field(default_factory=dict)
+    pricing_insights: list[dict] = field(default_factory=list)
+
     # Validator output
     validation_warnings: list[str] = field(default_factory=list)
 

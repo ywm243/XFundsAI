@@ -4,7 +4,7 @@
 import logging
 import re
 from langgraph.state import AgentState
-from langgraph.registry import match_keywords, check_not_capabilities
+from langgraph.registry import match_keywords, check_not_capabilities, match_pricing_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,24 @@ def route_to_agent(state: AgentState) -> dict:
     Returns updated router_decision dict.
     """
     text = state.user_text
-    scores = match_keywords(text)
+
+    # Pricing domain check — if pricing keywords dominate, route to PRICING agent
+    pricing_score = match_pricing_keywords(text)
+    bi_scores = match_keywords(text)
+    bi_score = max(bi_scores.values()) if bi_scores else 0
+
+    if pricing_score > bi_score and pricing_score > 0.1:
+        return {
+            "router_decision": {
+                "status": "ok",
+                "agent": "PRICING",
+                "confidence": pricing_score,
+                "reason": "",
+                "message": "",
+            }
+        }
+
+    scores = bi_scores
 
     # Gate 1: lowest confidence. If no agent scores above 0.05 → unknown topic
     max_score = max(scores.values()) if scores else 0

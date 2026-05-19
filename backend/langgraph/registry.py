@@ -54,3 +54,21 @@ def check_not_capabilities(text: str) -> list[str]:
                 blocked.append(name)
                 break
     return blocked
+
+
+PRICING_KEYWORDS = [
+    "询价", "报价", "结汇", "购汇", "买汇", "卖汇",
+    "比价", "点差", "成交", "下单", "多少钱",
+    "汇率", "价格", "即期", "远期", "掉期",
+]
+
+
+def match_pricing_keywords(text: str) -> float:
+    """返回文本匹配pricing关键词的得分"""
+    if not text:
+        return 0.0
+    count = 0
+    for kw in PRICING_KEYWORDS:
+        if kw in text:
+            count += 1
+    return min(count / max(len(PRICING_KEYWORDS), 1), 1.0)

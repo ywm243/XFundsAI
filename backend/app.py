@@ -1,5 +1,10 @@
 """FastAPI application — FX trade query service."""
 
+import platform
+if platform.system() == "Windows":
+    import ctypes
+    ctypes.windll.kernel32.SetDllDirectoryW(r"D:\soft\instantclient\instantclient_19_19")
+
 import asyncio
 import json
 import logging
@@ -21,6 +26,8 @@ from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
 from db.query_builder import TradeQueryBuilder
 from db.mysql_store import init_db, get_conn, _auto_migrate
 from admin_routes import router as admin_router
+from backend.pricing.routes import router as pricing_router, init_pricing_service
+from backend.event_bus import bus
 from services.query_service import build_sql, execute_query_sync, fetch_breakdown_text
 from services.result_formatter import (
     build_summary, build_chart_option, build_insights,
@@ -30,14 +37,27 @@ from services.context_inherit import inherit_params_from_context, inherit_dates_
 
 logger = logging.getLogger(__name__)
 
-# Initialize store on startup
-init_db()
-_auto_migrate()
+# Initialize store on startup (MySQL unavailable → log and continue)
+try:
+    init_db()
+    _auto_migrate()
+except Exception as exc:
+    logger.warning("MySQL init skipped: %s (rules/memory will use defaults)", exc)
 
 # Load dimension config from rules DB and inject into query builder
 _dimension_config = load_dimension_config()
 TradeQueryBuilder.configure_dimensions(_dimension_config.get("dimensions", {}))
 logger.info("Dimension config loaded (%d dimensions)", len(_dimension_config.get("dimensions", {})))
+
+# 初始化询报价服务
+with open("backend/knowledge_base/semantic_rules.json", "r", encoding="utf-8") as _f:
+    _rules = json.load(_f)
+_pricing_cfg = _rules.get("pricing", {})
+init_pricing_service(
+    engine_url=os.getenv("PRICING_ENGINE_URL", ""),
+    scenarios=_pricing_cfg.get("scenarios", {}),
+    validity_minutes=_pricing_cfg.get("quote_validity_minutes", 5),
+)
 
 from smartbi_mcp.server import create_http_app, get_session_manager
 _mcp_asgi = create_http_app()
@@ -76,6 +96,7 @@ async def serve_index():
 
 
 app.include_router(admin_router)
+app.include_router(pricing_router)
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
@@ -85,6 +106,28 @@ def _now() -> str:
 
 
 _RESULT_MAX_CHARS = 50000
+
+
+def _write_audit_log(session_id: str, raw_input: str, parsed: dict,
+                     sql: str | None, row_count: int, summary: str | None) -> None:
+    """Persist query execution to audit_log table (fire-and-forget)."""
+    try:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO audit_log (request_id, session_id, raw_input, resolved_params,
+                       sql_executed, result_rows, response_to_user)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (str(uuid.uuid4())[:8], session_id, raw_input,
+                     json.dumps(parsed, ensure_ascii=False) if parsed else None,
+                     sql, row_count, _safe_truncate(summary or "", 2000)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("Audit log write failed: %s", exc)
 
 
 def _safe_truncate(text: str, max_chars: int = _RESULT_MAX_CHARS) -> str:
@@ -202,9 +245,14 @@ def list_sessions():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, agent_type, created_at, updated_at FROM sessions WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 50"
-            )
+            cur.execute("""
+                SELECT s.id, s.agent_type, s.created_at, s.updated_at,
+                       (SELECT t.user_query FROM turns t WHERE t.session_id = s.id ORDER BY t.turn_index ASC LIMIT 1) AS first_query,
+                       (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count
+                FROM sessions s
+                WHERE s.is_active = 1
+                ORDER BY s.updated_at DESC LIMIT 50
+            """)
             return cur.fetchall()
     finally:
         conn.close()
@@ -418,6 +466,19 @@ async def query(request: Request):
         if pre_parsed:
             parsed = pre_parsed
             logger.info("Using pre-parsed params from frontend")
+            # Still inherit missing params from context (e.g. profit_type from previous turn)
+            if context:
+                inherited = inherit_params_from_context(context, parsed, user_text=text)
+                if inherited:
+                    for k, v in inherited.items():
+                        if k not in parsed or not parsed.get(k):
+                            parsed[k] = v
+                dates = inherit_dates_from_context(context)
+                if dates:
+                    if not parsed.get("date_start"):
+                        parsed["date_start"] = dates["date_start"]
+                    if not parsed.get("date_end"):
+                        parsed["date_end"] = dates["date_end"]
         else:
             parsed = await _resolve_params(text, context)
 
@@ -453,7 +514,7 @@ async def query(request: Request):
             "error": f"{type(exc).__name__}: {exc}",
         })
 
-    return {
+    result = {
         "sql": sql,
         "comparison_sql": comparison_sql,
         "params": parsed,
@@ -467,6 +528,8 @@ async def query(request: Request):
         "validation_warnings": [],
         "sql_validated": True,
     }
+    _write_audit_log(session_id, text, parsed, sql, len(rows), result.get("summary"))
+    return result
 
 
 # ── LangGraph orchestration endpoint ──────────────────────────────────────────
@@ -627,6 +690,42 @@ async def analyze(body: dict):
         return JSONResponse(status_code=503, content={"error": "分析服务暂不可用，请稍后重试"})
 
     return {"summary": result_text}
+
+
+# ── Audit Log ─────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/audit-log")
+def get_audit_log(session_id: str = "", limit: int = 50):
+    """Return recent audit log entries, optionally filtered by session_id."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if session_id:
+                cur.execute(
+                    """SELECT id, request_id, session_id, raw_input, resolved_params,
+                       sql_executed, result_rows, created_at
+                       FROM audit_log WHERE session_id=%s
+                       ORDER BY created_at DESC LIMIT %s""",
+                    (session_id, limit),
+                )
+            else:
+                cur.execute(
+                    """SELECT id, request_id, session_id, raw_input, resolved_params,
+                       sql_executed, result_rows, created_at
+                       FROM audit_log ORDER BY created_at DESC LIMIT %s""",
+                    (limit,),
+                )
+            rows = cur.fetchall()
+            for r in rows:
+                if isinstance(r.get("resolved_params"), str):
+                    try:
+                        r["resolved_params"] = json.loads(r["resolved_params"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            return rows
+    finally:
+        conn.close()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
