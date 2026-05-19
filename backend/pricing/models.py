@@ -37,6 +37,7 @@ class InquiryParams:
     near_tenor: str = ""
     far_tenor: str = ""
     request_id: str = ""
+    sandbox: bool = False  # 模拟询价沙盒模式
 
     def missing_required(self) -> list[str]:
         required = {

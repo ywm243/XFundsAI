@@ -477,6 +477,14 @@
   "pricing": {
     "_description": "询报价规则 — 产品必填字段、预设情景、报价有效期、术语解释",
     "quote_validity_minutes": 5,
+    "amount_thresholds": {
+      "SPOT": 50000000,
+      "FWD": 50000000,
+      "SWAP": 50000000,
+      "_description": "等值美元金额，超过此阈值转线下询价"
+    },
+    "session_timeout_minutes": 5,
+    "rate_limit_seconds": 5,
     "product_params": {
       "SPOT":  {"required_fields": ["currency_pair", "direction"]},
       "FWD":   {"required_fields": ["currency_pair", "direction", "tenor"]},
