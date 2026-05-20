@@ -239,6 +239,40 @@ CREATE TABLE IF NOT EXISTS error_log (
     INDEX idx_error_type (error_type),
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS langgraph_checkpoints (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    thread_id VARCHAR(128) NOT NULL DEFAULT '',
+    checkpoint_ns VARCHAR(128) NOT NULL DEFAULT '',
+    checkpoint_id VARCHAR(64) NOT NULL DEFAULT '',
+    parent_id VARCHAR(64) NOT NULL DEFAULT '',
+    data JSON,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_thread (thread_id, checkpoint_ns, checkpoint_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    key_hash VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'SHA-256 of API key',
+    permissions JSON COMMENT '["bi","pricing","admin"]',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME DEFAULT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    INDEX idx_key_hash (key_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tool_calls_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tool_name VARCHAR(64) NOT NULL DEFAULT '',
+    duration_ms FLOAT NOT NULL DEFAULT 0,
+    success BOOLEAN NOT NULL DEFAULT TRUE,
+    error_type VARCHAR(64) NOT NULL DEFAULT '',
+    session_id VARCHAR(128) NOT NULL DEFAULT '',
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_tool_name (tool_name),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
