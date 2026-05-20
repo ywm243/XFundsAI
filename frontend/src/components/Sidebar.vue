@@ -1,7 +1,11 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { getAuditLog } from '../api.js'
 import WikiPanel from './WikiPanel.vue'
+import {
+  Diamond, MessageSquare, TrendingUp, Shield,
+  History, ClipboardList, BookOpen, Settings, Plus, Clock
+} from 'lucide-vue-next'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -16,9 +20,9 @@ const auditLogs = ref([])
 const activeAgent = ref('bi')
 
 const agents = [
-  { key: 'bi', icon: '💬', label: 'BI Agent', active: true },
-  { key: 'quoting', icon: '📊', label: '询报价 Agent', active: false },
-  { key: 'risk', icon: '⚠️', label: '风控 Agent', active: false },
+  { key: 'bi', component: MessageSquare, label: 'BI 智能分析', active: true },
+  { key: 'quoting', component: TrendingUp, label: '询报价', active: false },
+  { key: 'risk', component: Shield, label: '风控', active: false },
 ]
 
 const sortedSessions = computed(() => {
@@ -78,40 +82,47 @@ function formatTime(ts) {
 
 <template>
   <div class="sidebar" :class="{ expanded }">
-    <div class="sidebar-logo" @click="handleNewChat" title="新查询">◆</div>
-
-    <div
-      v-for="agent in agents" :key="agent.key"
-      class="sidebar-icon"
-      :class="{ active: activeAgent === agent.key, disabled: !agent.active }"
-      :title="agent.label"
-      @click="handleAgentClick(agent)"
-    >
-      {{ agent.icon }}
+    <div class="sidebar-logo" @click="handleNewChat" title="新查询">
+      <Diamond :size="22" class="logo-icon" />
     </div>
 
-    <div class="sidebar-spacer"></div>
+    <div class="agent-group">
+      <div
+        v-for="agent in agents" :key="agent.key"
+        class="sidebar-icon"
+        :class="{ active: activeAgent === agent.key, disabled: !agent.active }"
+        :title="agent.label"
+        @click="handleAgentClick(agent)"
+      >
+        <component :is="agent.component" :size="18" />
+        <span class="icon-label">{{ agent.label }}</span>
+      </div>
+    </div>
+
+    <div class="sidebar-divider"></div>
 
     <div class="sidebar-icon" title="查询历史" @click="handleHistoryClick">
-      🕐
+      <History :size="18" />
     </div>
 
     <div class="sidebar-icon" title="审计日志" @click="handleAuditClick">
-      📋
+      <ClipboardList :size="18" />
     </div>
 
     <div class="sidebar-icon" title="知识库" @click="handleWikiClick">
-      📚
+      <BookOpen :size="18" />
     </div>
 
     <div class="sidebar-icon" title="规则管理" @click="handleAdminClick">
-      ⚙
+      <Settings :size="18" />
     </div>
 
     <div v-if="expanded" class="sidebar-panel">
       <div class="sidebar-panel-header">
         <span class="sidebar-panel-title">查询历史</span>
-        <span class="sidebar-new-btn" @click="handleNewChat">+ 新查询</span>
+        <span class="sidebar-new-btn" @click="handleNewChat">
+          <Plus :size="13" /> 新查询
+        </span>
       </div>
       <div v-if="sortedSessions.length === 0" class="sidebar-panel-empty">
         暂无历史记录
@@ -124,7 +135,10 @@ function formatTime(ts) {
           @click="handleSelectSession(s.id)"
         >
           <div class="session-title">{{ s.first_query || '(空会话)' }}</div>
-          <div class="session-meta">{{ s.turn_count || 0 }}轮 · {{ (s.updated_at || '').slice(5, 16) }}</div>
+          <div class="session-meta">
+            <Clock :size="10" />
+            {{ s.turn_count || 0 }}轮 · {{ (s.updated_at || '').slice(5, 16) }}
+          </div>
         </div>
       </div>
     </div>
@@ -164,48 +178,81 @@ function formatTime(ts) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 12px 0;
-  gap: 4px;
+  padding: 12px 8px;
+  gap: 2px;
   position: relative;
-  transition: width 0.2s;
+  transition: width 0.2s ease;
   flex-shrink: 0;
+  z-index: 10;
 }
-.sidebar.expanded { width: 220px; }
+.sidebar.expanded { width: 232px; }
 
 .sidebar-logo {
-  font-size: 20px;
-  margin-bottom: 16px;
-  opacity: 0.8;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
   cursor: pointer;
+  color: var(--accent);
+  transition: all 0.2s ease;
 }
-.sidebar-logo:hover { opacity: 1; }
+.sidebar-logo:hover { color: var(--accent-hover); transform: scale(1.08); }
+.logo-icon { filter: drop-shadow(0 0 6px rgba(200,141,10,0.3)); }
+
+.agent-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.sidebar-divider {
+  width: 24px;
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+  flex-shrink: 0;
+}
 
 .sidebar-icon {
-  padding: 8px;
-  border-radius: 8px;
-  font-size: 16px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  transition: background 0.15s;
+  color: var(--text-muted);
+  transition: all 0.18s ease;
+  position: relative;
 }
-.sidebar-icon:hover { background: #1e293b; }
-.sidebar-icon.active { background: var(--accent); color: #fff; }
-.sidebar-icon.disabled { opacity: 0.35; cursor: not-allowed; }
-
-.sidebar-spacer { flex: 1; }
+.sidebar-icon:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.sidebar-icon.active { background: var(--accent-dim); color: var(--accent); }
+.sidebar-icon.disabled { opacity: 0.3; cursor: not-allowed; }
+.sidebar-icon.disabled:hover { background: transparent; color: var(--text-muted); }
+.icon-label { display: none; }
 
 .sidebar-panel {
   position: absolute;
   left: 100%;
   top: 0;
   bottom: 0;
-  width: 220px;
-  background: var(--bg-sidebar);
+  width: 232px;
+  background: var(--bg-primary);
   border-right: 1px solid var(--border);
   padding: 16px;
-  z-index: 10;
+  z-index: 20;
   display: flex;
   flex-direction: column;
+  animation: panelSlideIn 0.18s ease;
 }
+@keyframes panelSlideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
 .sidebar-panel-header {
   display: flex;
   justify-content: space-between;
@@ -213,46 +260,62 @@ function formatTime(ts) {
   margin-bottom: 12px;
 }
 .sidebar-panel-title {
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .sidebar-new-btn {
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
-.sidebar-new-btn:hover { text-decoration: underline; }
+.sidebar-new-btn:hover { color: var(--accent-hover); }
+
 .sidebar-panel-empty {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   text-align: center;
-  padding: 20px 0;
+  padding: 24px 0;
 }
+
 .session-list {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .session-item {
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: background 0.15s;
+  border: 1px solid transparent;
 }
-.session-item:hover { background: #1e293b; }
-.session-item.current { background: #1e3a5f; }
+.session-item:hover { background: var(--bg-hover); }
+.session-item.current {
+  background: var(--bg-elevated);
+  border-color: var(--border-light);
+}
+
 .session-title {
   font-size: 12px;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-bottom: 3px;
 }
 .session-meta {
   font-size: 10px;
   color: var(--text-muted);
-  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

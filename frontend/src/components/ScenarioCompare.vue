@@ -58,12 +58,12 @@ const rows = computed(() =>
 .scenario-disclaimer {
   margin-top: 12px;
   padding: 8px 12px;
-  background: #fff3e0;
-  border: 1px solid #ffcc02;
-  border-left: 4px solid #e65100;
-  border-radius: 4px;
+  background: var(--warning-bg);
+  border: 1px solid rgba(245,158,11,0.2);
+  border-left: 4px solid var(--warning);
+  border-radius: var(--radius-sm);
   font-size: 12px;
-  color: #bf360c;
+  color: #f59e0b;
   font-weight: 500;
 }
 

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, h } from 'vue'
 import { NCard, NDataTable } from 'naive-ui'
+import { BarChart3, Layers, FileText } from 'lucide-vue-next'
 
 const props = defineProps({
   data: { type: Object, required: true },
@@ -101,7 +102,8 @@ function getDimColumns(drivers) {
     <!-- ── Structured view ── -->
     <template v-else>
       <!-- Overview KPI card -->
-      <NCard title="📊 总览" class="ana-card" size="small" :bordered="true">
+      <NCard class="ana-card" size="small" :bordered="true">
+        <template #header><BarChart3 :size="15" /> 总览</template>
         <div class="kpi-row">
           <div class="kpi-box">
             <div class="kpi-label">当期{{ metricLabel }}</div>
@@ -126,11 +128,11 @@ function getDimColumns(drivers) {
       <NCard
         v-for="dim in dimensions"
         :key="dim.dimension"
-        :title="'📋 ' + dim.dim_label"
         class="ana-card"
         size="small"
         :bordered="true"
       >
+        <template #header><Layers :size="15" /> {{ dim.dim_label }}</template>
         <div class="dim-subtitle">
           总变化：<span :class="baseline.total_change >= 0 ? 'up' : 'down'">
             {{ fmtNum(baseline.total_change) }}（{{ fmtPct(baseline.total_change_pct) }}）
@@ -155,7 +157,8 @@ function getDimColumns(drivers) {
       </NCard>
 
       <!-- Summary / conclusions card -->
-      <NCard v-if="data.summary" title="📌 总结" class="ana-card" size="small" :bordered="true">
+      <NCard v-if="data.summary" class="ana-card" size="small" :bordered="true">
+        <template #header><FileText :size="15" /> 总结</template>
         <div class="summary-text">{{ data.summary }}</div>
       </NCard>
     </template>
@@ -211,7 +214,7 @@ function getDimColumns(drivers) {
 .kpi-value {
   font-size: 16px;
   font-weight: 700;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-mono);
   color: var(--text-primary, #e2e8f0);
 }
 
@@ -258,7 +261,7 @@ function getDimColumns(drivers) {
 .contrib-text {
   font-size: 12px;
   font-weight: 600;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-mono);
   white-space: nowrap;
   z-index: 1;
 }

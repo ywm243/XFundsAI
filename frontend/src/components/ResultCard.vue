@@ -6,6 +6,7 @@ import InsightPanel from './InsightPanel.vue'
 import AnalysisResult from './AnalysisResult.vue'
 import { COLUMN_LABELS, formatCellValue } from '../constants.js'
 import * as XLSX from 'xlsx'
+import { TrendingUp, Download, FileText, Clock, ChevronUp, ChevronDown, Database, Code, Filter, FileJson } from 'lucide-vue-next'
 
 const props = defineProps({
   data: { type: Object, required: true },
@@ -135,21 +136,25 @@ function handleExportPdf() {
 
 <template>
   <div class="result-card">
-    <!-- Section 1: NL Summary (analyze mode → structured cards; else → plain text) -->
+    <!-- Section 1: NL Summary -->
     <AnalysisResult v-if="isAnalyze && data.summary" :data="data" />
     <div v-else-if="data.summary" class="result-summary">
       <div class="summary-text">{{ data.summary }}</div>
       <div class="summary-meta">
-        <span v-if="data.params?.date_start">🕐 {{ data.params.date_start }} ~ {{ data.params.date_end }}</span>
-        <span v-if="data.comparison" :style="{ color: (data.comparison.change_amount ?? 0) >= 0 ? 'var(--success-text)' : 'var(--error)' }">
-          {{ data.comparison.change_amount >= 0 ? '▲' : '▼' }} {{ data.comparison.label }} {{ data.comparison.change_rate }}%
+        <span v-if="data.params?.date_start" class="meta-date">
+          <Clock :size="11" /> {{ data.params.date_start }} ~ {{ data.params.date_end }}
+        </span>
+        <span v-if="data.comparison" class="meta-compare" :class="{ positive: (data.comparison.change_amount ?? 0) >= 0, negative: (data.comparison.change_amount ?? 0) < 0 }">
+          <ChevronUp v-if="(data.comparison.change_amount ?? 0) >= 0" :size="13" />
+          <ChevronDown v-else :size="13" />
+          {{ data.comparison.label }} {{ data.comparison.change_rate }}%
         </span>
       </div>
     </div>
 
     <!-- Section 2: Chart (hide in analyze mode) -->
     <div v-if="!isAnalyze && safeChartOption?.series" class="result-chart">
-      <div class="section-label">📈 {{ safeChartOption._title || '数据图表' }}</div>
+      <div class="section-label"><TrendingUp :size="13" /> {{ safeChartOption._title || '数据图表' }}</div>
       <div v-if="isOversized" class="chart-warning">图表仅显示前 {{ MAX_CHART_ITEMS }} 项</div>
       <ChartView :option="safeChartOption" />
     </div>
@@ -160,8 +165,11 @@ function handleExportPdf() {
     <!-- Section 4: Data table (hide in analyze mode) -->
     <template v-if="!isAnalyze">
       <div v-if="warningMessage" class="data-warning">{{ warningMessage }}</div>
-      <NTabs v-model:value="activeTab" type="line" :tabs-padding="0">
-        <NTabPane tab="数据" name="data">
+      <NTabs v-model:value="activeTab" type="line">
+        <NTabPane name="data">
+          <template #tab>
+            <span class="tab-header"><Database :size="13" /> 数据</span>
+          </template>
           <NDataTable
             :columns="tableColumns"
             :data="tableData"
@@ -171,13 +179,22 @@ function handleExportPdf() {
             striped
           />
         </NTabPane>
-        <NTabPane v-if="data.sql" tab="SQL" name="sql">
+        <NTabPane v-if="data.sql" name="sql">
+          <template #tab>
+            <span class="tab-header"><Code :size="13" /> SQL</span>
+          </template>
           <NCode :code="data.sql" language="sql" :word-wrap="true" />
         </NTabPane>
-        <NTabPane v-if="data.comparison_sql" tab="对比SQL" name="comparison_sql">
+        <NTabPane v-if="data.comparison_sql" name="comparison_sql">
+          <template #tab>
+            <span class="tab-header"><Code :size="13" /> 对比SQL</span>
+          </template>
           <NCode :code="data.comparison_sql" language="sql" :word-wrap="true" />
         </NTabPane>
-        <NTabPane v-if="data.params" tab="参数" name="params">
+        <NTabPane v-if="data.params" name="params">
+          <template #tab>
+            <span class="tab-header"><Filter :size="13" /> 参数</span>
+          </template>
           <NCode :code="JSON.stringify(data.params, null, 2)" language="json" :word-wrap="true" />
         </NTabPane>
       </NTabs>
@@ -186,8 +203,8 @@ function handleExportPdf() {
       <div class="result-footer">
         <span class="footer-row-count">共 {{ tableRowCount }} 行</span>
         <span class="footer-export">
-          <span class="export-btn" @click="handleExportExcel">📥 Excel</span>
-          <span class="export-btn" @click="handleExportPdf">📄 PDF</span>
+          <span class="export-btn" @click="handleExportExcel"><Download :size="12" /> Excel</span>
+          <span class="export-btn" @click="handleExportPdf"><FileText :size="12" /> PDF</span>
         </span>
       </div>
     </template>
@@ -198,49 +215,70 @@ function handleExportPdf() {
 .result-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   font-size: 13px;
 }
+
 .result-summary {
-  padding: 14px 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(135deg, #1e3a5f20, #1e293b);
+  background: linear-gradient(135deg, rgba(200,141,10,0.04), transparent 50%);
 }
-.summary-text { font-size: 14px; line-height: 1.6; }
+.summary-text { font-size: 14px; line-height: 1.7; font-family: var(--font-sans); }
 .summary-meta {
-  margin-top: 6px;
+  margin-top: 8px;
   display: flex;
-  gap: 16px;
+  gap: 20px;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
+.meta-date, .meta-compare { display: flex; align-items: center; gap: 4px; }
+.meta-compare.positive { color: var(--success-text); }
+.meta-compare.negative { color: var(--error); }
+
 .result-chart {
-  padding: 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border);
 }
 .section-label {
   font-size: 11px;
+  font-weight: 600;
   color: var(--text-muted);
-  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
+
+.tab-header { display: inline-flex; align-items: center; gap: 5px; }
+
 .result-footer {
-  padding: 8px 16px;
+  padding: 10px 20px;
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
   font-size: 11px;
   color: var(--text-muted);
 }
-.footer-export { display:flex; gap:12px; }
-.export-btn { cursor: pointer; }
+.footer-export { display: flex; gap: 16px; }
+.export-btn {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s;
+}
 .export-btn:hover { color: var(--text-secondary); }
+
 .data-warning, .chart-warning {
   padding: 6px 16px;
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: #f59e0b;
   font-size: 12px;
-  border-bottom: 1px solid #fde68a;
+  border-bottom: 1px solid rgba(245,158,11,0.15);
 }
 .chart-warning {
   padding: 4px 0 8px;

@@ -233,7 +233,7 @@ function onExpired() {
 
     <!-- Novice mode tip -->
     <div v-if="data.novice_mode" class="novice-bar">
-      💡 点击专业术语可查看解释
+      点击专业术语可查看解释
     </div>
 
     <!-- Risk disclosure modal -->
@@ -262,11 +262,11 @@ function onExpired() {
 .sandbox-banner {
   padding: 8px 16px;
   margin-bottom: 12px;
-  background: #e3f2fd;
-  border: 1px solid #90caf9;
-  border-radius: 6px;
+  background: var(--info-bg);
+  border: 1px solid rgba(99,102,241,0.2);
+  border-radius: var(--radius-md);
   font-size: 13px;
-  color: #1565c0;
+  color: #818cf8;
   text-align: center;
 }
 
@@ -288,9 +288,9 @@ function onExpired() {
 .discount-badge {
   display: inline-block;
   padding: 1px 8px;
-  background: #fff3e0;
-  color: #e65100;
-  border-radius: 4px;
+  background: var(--warning-bg);
+  color: #f59e0b;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 500;
 }
@@ -326,7 +326,7 @@ function onExpired() {
   font-weight: 700;
   color: var(--accent);
   margin: 4px 0;
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
 .quote-meta {

@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { NModal, NCheckbox, NButton, NSpace } from 'naive-ui'
+import { AlertTriangle } from 'lucide-vue-next'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -15,7 +16,7 @@ const agreed = ref(false)
 <template>
   <NModal :show="show" :mask-closable="false" title="">
     <div class="risk-modal">
-      <h3 class="risk-title">⚠ {{ title }}</h3>
+      <h3 class="risk-title"><AlertTriangle :size="17" /> {{ title }}</h3>
       <ul class="risk-items">
         <li v-for="item in items" :key="item">{{ item }}</li>
       </ul>

@@ -12,6 +12,7 @@
     "echarts": "^6.0.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
+    "lucide-vue-next": "^1.0.0",
     "naive-ui": "^2.40.0",
     "vue": "^3.5.0",
     "xlsx": "^0.18.5"

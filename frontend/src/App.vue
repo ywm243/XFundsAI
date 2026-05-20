@@ -7,6 +7,7 @@ import InputArea from './components/InputArea.vue'
 import AdminRules from './views/AdminRules.vue'
 import Sidebar from './components/Sidebar.vue'
 import WelcomeGuide from './components/WelcomeGuide.vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import { checkHealth, executeChat,
          createSession, listSessions, getSession, saveTurn,
          pricingConfirm, pricingRefresh, pricingCancel } from './api.js'
@@ -337,7 +338,7 @@ function handleNavigate(target) {
         <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
           <template v-if="viewMode === 'admin'">
             <div style="padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);">
-              <NButton size="tiny" @click="viewMode = 'chat'">← 返回</NButton>
+              <NButton size="tiny" @click="viewMode = 'chat'"><ArrowLeft :size="14" /> 返回</NButton>
             </div>
             <AdminRules />
           </template>
@@ -356,22 +357,76 @@ function handleNavigate(target) {
 </template>
 
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; }
-#app { height: 100%; }
-
+/* ── Precision Terminal — Gold + Slate design system ── */
 :root {
-  --bg-primary: #0f172a;
-  --bg-card: #1e293b;
-  --bg-sidebar: #0b1120;
-  --border: #334155;
-  --accent: #1d4ed8;
-  --success: #22c55e;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --bg-root: #090d14;
+  --bg-primary: #0d1320;
+  --bg-card: #111927;
+  --bg-elevated: #161f30;
+  --bg-sidebar: #080c17;
+  --bg-hover: #1a2540;
+
+  --border: #1e2d44;
+  --border-light: #253650;
+
+  --accent: #c88d0a;
+  --accent-hover: #e5a814;
+  --accent-dim: #8b6914;
+
+  --info: #6366f1;
+  --info-bg: #1e1b4b;
+
+  --success: #10b981;
+  --success-bg: #022c22;
   --success-text: #34d399;
+
   --warning: #f59e0b;
+  --warning-bg: #451a03;
+
   --error: #ef4444;
-  --text-primary: #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --error-bg: #450a0a;
+
+  --text-primary: #e8edf5;
+  --text-secondary: #8b9cc0;
+  --text-muted: #55657e;
+  --text-dim: #3b4a63;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
 }
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  font-family: var(--font-sans);
+  background: var(--bg-root);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(200,141,10,0.008) 2px, rgba(200,141,10,0.008) 4px),
+    repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(200,141,10,0.005) 2px, rgba(200,141,10,0.005) 4px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+#app { height: 100%; position: relative; z-index: 1; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+::selection { background: var(--accent-dim); color: var(--text-primary); }
 </style>

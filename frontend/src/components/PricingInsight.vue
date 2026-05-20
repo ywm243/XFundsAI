@@ -1,4 +1,6 @@
 <script setup>
+import { TrendingUp, BarChart3, Pencil, Banknote } from 'lucide-vue-next'
+
 const props = defineProps({
   insights: { type: Array, default: () => [] },
 })
@@ -6,17 +8,19 @@ const props = defineProps({
 const emit = defineEmits(['quickQuery'])
 
 const iconMap = {
-  rate_chart: '\u{1F4C8}',         // chart with upward trend
-  product_comparison: '\u{1F4CA}', // bar chart
-  history: '\u{1F4DD}',            // memo
-  market: '\u{1F4B1}',             // currency exchange
+  rate_chart: TrendingUp,
+  product_comparison: BarChart3,
+  history: Pencil,
+  market: Banknote,
 }
 </script>
 
 <template>
   <div v-if="insights.length" class="insight-list">
     <div v-for="(item, idx) in insights" :key="idx" class="insight-item">
-      <span class="insight-icon">{{ iconMap[item.type] || '\u{1F4CB}' }}</span>
+      <span class="insight-icon">
+        <component :is="iconMap[item.type] || BarChart3" :size="16" />
+      </span>
       <div class="insight-body">
         <div class="insight-title">{{ item.title }}</div>
         <div class="insight-detail">{{ item.detail || item.summary }}</div>
@@ -41,15 +45,15 @@ const iconMap = {
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
-  background: rgba(30, 41, 59, 0.5);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   margin-bottom: 6px;
 }
 .insight-icon {
-  font-size: 16px;
   flex-shrink: 0;
   margin-top: 1px;
+  color: var(--text-muted);
 }
 .insight-body {
   flex: 1;
@@ -70,16 +74,16 @@ const iconMap = {
   flex-shrink: 0;
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: all 0.15s ease;
 }
 .insight-action:hover {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-dim);
   border-color: var(--accent);
+  color: var(--accent-hover);
 }
 </style>
