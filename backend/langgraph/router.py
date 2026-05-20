@@ -15,6 +15,9 @@ _PRODUCT_KEYWORDS = ["外汇", "即期", "远期", "掉期", "期权", "结汇",
 _TIME_KEYWORDS = ["月", "年", "日", "周", "今天", "昨天", "明天", "本季度",
                   "同比", "环比", "yoy", "mom", "最近"]
 
+# Keywords that signal an analysis/attribution query
+_ANALYSIS_KEYWORDS = {"为什么", "原因", "分析", "怎么回事", "解释", "怎么变化", "趋势说明"}
+
 
 def _check_bi_completeness(text: str, resolved: dict) -> list[str]:
     """Check BI query parameter completeness.
@@ -46,6 +49,14 @@ def _check_bi_completeness(text: str, resolved: dict) -> list[str]:
     return needs
 
 
+def _match_analysis_keywords(text: str) -> float:
+    """Score analysis intent by keyword match ratio."""
+    if not text:
+        return 0.0
+    hits = sum(1 for kw in _ANALYSIS_KEYWORDS if kw in text)
+    return hits / max(len(_ANALYSIS_KEYWORDS), 1)
+
+
 def route_to_agent(state: AgentState) -> dict:
     """Run three security gates to decide routing.
 
@@ -70,6 +81,20 @@ def route_to_agent(state: AgentState) -> dict:
         }
 
     scores = bi_scores
+
+    # Analysis domain check — if analysis keywords dominate BI keywords, route to ANALYSIS agent
+    analysis_score = _match_analysis_keywords(text)
+    bi_score = scores.get("BI", 0)
+    if analysis_score > 0.3 and analysis_score > bi_score:
+        return {
+            "router_decision": {
+                "status": "ok",
+                "agent": "ANALYSIS",
+                "confidence": round(analysis_score, 2),
+                "reason": "analysis_intent_detected",
+                "message": "",
+            }
+        }
 
     # Gate 1: lowest confidence. If no agent scores above 0.05 → unknown topic
     max_score = max(scores.values()) if scores else 0

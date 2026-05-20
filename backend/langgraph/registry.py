@@ -27,6 +27,13 @@ AGENT_REGISTRY: dict[str, AgentCapability] = {
                           "客户信用", "合规检查"],
         subgraph="bi_agent",
     ),
+    "ANALYSIS": AgentCapability(
+        name="ANALYSIS",
+        keywords=["为什么", "原因", "分析", "怎么回事", "解释", "怎么变化", "趋势说明"],
+        capabilities=["change_attribution", "dimension_decomposition", "text_analysis"],
+        NOT_capabilities=["prediction", "forecast"],
+        subgraph="analysis_agent",
+    ),
 }
 
 

@@ -36,6 +36,10 @@ class AgentState:
     pricing_result: dict = field(default_factory=dict)
     pricing_insights: list[dict] = field(default_factory=list)
 
+    # Analysis Agent 输出字段
+    analysis_data: dict = field(default_factory=dict)
+    mode: str = ""
+
     # Validator output
     validation_warnings: list[str] = field(default_factory=list)
 

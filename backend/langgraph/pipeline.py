@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph
 from langgraph.state import AgentState
 from langgraph.agents.bi_agent import build_bi_subgraph
 from langgraph.agents.pricing_agent import build_pricing_subgraph
+from langgraph.agents.analysis_agent import build_analysis_graph
 from langgraph.context_resolver import resolve_context
 from langgraph.router import route_to_agent
 from langgraph.validators import node_validate
@@ -22,10 +23,12 @@ def _route_agent(state: AgentState) -> str:
     agent = decision.get("agent", "BI")
     if agent == "PRICING":
         return "pricing_agent"
+    if agent == "ANALYSIS":
+        return "analysis_agent"
     return "bi_agent"
 
 
-def build_main_graph() -> StateGraph:
+def build_main_graph(checkpointer=None) -> StateGraph:
     """Build the full orchestration graph."""
     builder = StateGraph(AgentState)
 
@@ -34,6 +37,7 @@ def build_main_graph() -> StateGraph:
     builder.add_node("router", route_to_agent)
     builder.add_node("bi_agent", build_bi_subgraph())
     builder.add_node("pricing_agent", build_pricing_subgraph())
+    builder.add_node("analysis_agent", build_analysis_graph())
     builder.add_node("validate", node_validate)
 
     # Entry point → Context Resolver
@@ -43,12 +47,15 @@ def build_main_graph() -> StateGraph:
     # BI Agent → Validator
     builder.add_edge("bi_agent", "validate")
     builder.add_edge("pricing_agent", "validate")
+    builder.add_edge("analysis_agent", "validate")
 
     # Router → conditional agent dispatch
     builder.add_conditional_edges(
         "router",
         _route_agent,
-        {"bi_agent": "bi_agent", "pricing_agent": "pricing_agent", "__end__": "__end__"},
+        {"bi_agent": "bi_agent", "pricing_agent": "pricing_agent", "analysis_agent": "analysis_agent", "__end__": "__end__"},
     )
 
+    if checkpointer:
+        return builder.compile(checkpointer=checkpointer)
     return builder.compile()
