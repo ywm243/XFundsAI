@@ -48,6 +48,11 @@ class RiskGuard:
         if not customer_info:
             customer_info = {}
 
+        # 频率控制（每客户 5 秒冷却）
+        rate_ok, rate_remaining = self.check_rate_limit(customer_id)
+        if not rate_ok:
+            return False, f"询价频率过快，请{rate_remaining}秒后重试。"
+
         ok, reason = self.check_sanctions(customer_info)
         if not ok:
             return False, reason
