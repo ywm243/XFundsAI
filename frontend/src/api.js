@@ -153,3 +153,19 @@ export async function pricingCancel(pricingId) {
   }
   return resp.json()
 }
+
+// Wiki knowledge base
+export const wikiSearch = (keyword) =>
+  fetch(`${API_BASE}/wiki/search?keyword=${encodeURIComponent(keyword)}&limit=10`).then(r => r.json())
+
+export const wikiGetPage = (slug) =>
+  fetch(`${API_BASE}/wiki/pages/${encodeURIComponent(slug)}`).then(r => r.json())
+
+export const wikiGetByTag = (tag) =>
+  fetch(`${API_BASE}/wiki/by-tag/${encodeURIComponent(tag)}?limit=20`).then(r => r.json())
+
+export const wikiGetCustomer = (customerId) =>
+  fetch(`${API_BASE}/wiki/customer/${encodeURIComponent(customerId)}`).then(r => r.json())
+
+export const wikiCompile = () =>
+  fetch(`${API_BASE}/wiki/compile`, { method: 'POST' }).then(r => r.json())

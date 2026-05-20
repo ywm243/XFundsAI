@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getAuditLog } from '../api.js'
+import WikiPanel from './WikiPanel.vue'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -10,6 +11,7 @@ const props = defineProps({
 const emit = defineEmits(['navigate', 'newChat', 'loadSession'])
 const expanded = ref(false)
 const auditExpanded = ref(false)
+const wikiExpanded = ref(false)
 const auditLogs = ref([])
 const activeAgent = ref('bi')
 
@@ -34,22 +36,28 @@ function handleAgentClick(agent) {
 
 function handleHistoryClick() {
   expanded.value = !expanded.value
-  if (expanded.value) auditExpanded.value = false
+  if (expanded.value) { auditExpanded.value = false; wikiExpanded.value = false }
 }
 
 async function handleAuditClick() {
   auditExpanded.value = !auditExpanded.value
   if (auditExpanded.value) {
-    expanded.value = false
+    expanded.value = false; wikiExpanded.value = false
     try {
       auditLogs.value = await getAuditLog('', 30)
     } catch { auditLogs.value = [] }
   }
 }
 
+function handleWikiClick() {
+  wikiExpanded.value = !wikiExpanded.value
+  if (wikiExpanded.value) { expanded.value = false; auditExpanded.value = false }
+}
+
 function handleNewChat() {
   expanded.value = false
   auditExpanded.value = false
+  wikiExpanded.value = false
   emit('newChat')
 }
 
@@ -90,6 +98,10 @@ function formatTime(ts) {
 
     <div class="sidebar-icon" title="审计日志" @click="handleAuditClick">
       📋
+    </div>
+
+    <div class="sidebar-icon" title="知识库" @click="handleWikiClick">
+      📚
     </div>
 
     <div class="sidebar-icon" title="规则管理" @click="handleAdminClick">
@@ -133,6 +145,13 @@ function formatTime(ts) {
           <div class="session-meta">{{ log.result_rows || 0 }}行 · {{ formatTime(log.created_at) }}</div>
         </div>
       </div>
+    </div>
+
+    <div v-if="wikiExpanded" class="sidebar-panel">
+      <div class="sidebar-panel-header">
+        <span class="sidebar-panel-title">知识库</span>
+      </div>
+      <WikiPanel />
     </div>
   </div>
 </template>
