@@ -156,6 +156,22 @@ class ContextAssembler:
                 if key in params:
                     resolved[key] = params[key]
 
+        # 语义检索：相似历史查询
+        try:
+            query_text = ""
+            if turns:
+                query_text = turns[-1].get("user_query", "") or ""
+            if query_text:
+                similar = self.memory.find_similar(query_text, limit=3)
+                if similar:
+                    lines.append("## 相似历史查询")
+                    for s in similar:
+                        if isinstance(s, dict):
+                            lines.append(f"- {s.get('user_query', '')[:80]} -> "
+                                        f"{self._params_to_text(s.get('parsed_params', {}))}")
+        except Exception:
+            pass  # find_similar 不可用则跳过
+
         return "\n".join(lines), resolved
 
     def _build_agent_memory(self, session_id: str) -> str:

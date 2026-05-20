@@ -37,6 +37,15 @@ write_audit_log_tool.register(mcp)
 from .tools import check_cache_tool  # noqa: E402
 check_cache_tool.register(mcp)
 
+from .tools import wiki_search_tool  # noqa: E402
+wiki_search_tool.register(mcp)
+
+from .tools import wiki_get_tool  # noqa: E402
+wiki_get_tool.register(mcp)
+
+from .tools import wiki_rules_tool  # noqa: E402
+wiki_rules_tool.register(mcp)
+
 
 def create_http_app():
     """Create the ASGI app and initialize the session manager."""
