@@ -195,6 +195,24 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     INDEX idx_type (page_type),
     INDEX idx_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS token_usage_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
+    session_id VARCHAR(128) NOT NULL DEFAULT '',
+    call_site VARCHAR(32) NOT NULL DEFAULT '' COMMENT '调用点: bi_parse/context_resolve/llm_chat/...',
+    model_tier VARCHAR(8) NOT NULL DEFAULT '' COMMENT 'flash / pro',
+    model_name VARCHAR(64) NOT NULL DEFAULT '',
+    prompt_tokens INT NOT NULL DEFAULT 0,
+    completion_tokens INT NOT NULL DEFAULT 0,
+    total_tokens INT NOT NULL DEFAULT 0,
+    duration_ms FLOAT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_request_id (request_id),
+    INDEX idx_session_id (session_id),
+    INDEX idx_call_site (call_site),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -1095,3 +1113,44 @@ def delete_wiki_page(slug: str) -> bool:
         conn.close()
 
 
+# ============================================================
+# Token usage tracking (Phase 0 — observability)
+# ============================================================
+
+def insert_token_usage(conn, request_id: str, session_id: str, call_site: str,
+                       model_tier: str, model_name: str,
+                       prompt_tokens: int, completion_tokens: int,
+                       total_tokens: int, duration_ms: float) -> int:
+    sql = """INSERT INTO token_usage_log (request_id, session_id, call_site,
+              model_tier, model_name, prompt_tokens, completion_tokens,
+              total_tokens, duration_ms)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+    with conn.cursor() as cur:
+        cur.execute(sql, (request_id, session_id, call_site, model_tier,
+                         model_name, prompt_tokens, completion_tokens,
+                         total_tokens, duration_ms))
+        return cur.lastrowid
+
+
+def query_token_usage(conn, call_site: str = None, session_id: str = None,
+                      window_hours: int = 24, group_by: str = None) -> list[dict]:
+    """聚合查询 token 使用数据"""
+    where = ["created_at >= NOW() - INTERVAL %s HOUR"]
+    params = [window_hours]
+    if call_site:
+        where.append("call_site = %s")
+        params.append(call_site)
+    if session_id:
+        where.append("session_id = %s")
+        params.append(session_id)
+    sql = f"""SELECT call_site, model_tier,
+                     SUM(total_tokens) AS total_tokens,
+                     COUNT(*) AS call_count,
+                     AVG(duration_ms) AS avg_duration_ms
+              FROM token_usage_log
+              WHERE {' AND '.join(where)}
+              GROUP BY call_site, model_tier
+              ORDER BY total_tokens DESC"""
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
