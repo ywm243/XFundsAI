@@ -8,6 +8,7 @@ if platform.system() == "Windows":
 import asyncio
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -22,19 +23,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 from llm_parser.parser import rule_based_parse, _rule_confidence
 from llm_parser.llm_client import llm_parse, llm_chat
 from llm_parser.rules_engine import gatekeep, reload_rules, load_dimension_config
-from llm_parser.prompt_builder import build_system_prompt, invalidate_cache
+from llm_parser.prompt_builder import build_system_prompt, invalidate_cache as invalidate_prompt_cache
 from db.query_builder import TradeQueryBuilder
 from db.mysql_store import init_db, get_conn, _auto_migrate
 from admin_routes import router as admin_router
 from backend.pricing.routes import router as pricing_router, init_pricing_service
 from backend.event_bus import bus
 from backend.wiki.routes import router as wiki_router
+from backend.evaluation.routes import router as evaluation_router
 from services.query_service import build_sql, execute_query_sync, fetch_breakdown_text
 from services.result_formatter import (
     build_summary, build_chart_option, build_insights,
     merge_comparison_into_rows,
 )
 from services.context_inherit import inherit_params_from_context, inherit_dates_from_context
+from backend.middleware.auth import APIKeyAuthMiddleware
 from backend.middleware.error_handler import ErrorHandlerMiddleware
 from backend.middleware.timing import TimingMiddleware
 from backend.middleware.request_id import RequestIDMiddleware
@@ -71,6 +74,24 @@ _mcp_asgi = create_http_app()
 async def _mcp_lifespan(app: FastAPI):
     """Run MCP session manager lifecycle."""
     sm = get_session_manager()
+
+    # ── Event subscriptions ────────────────────────────────────────────
+    async def _on_wiki_updated(**kwargs):
+        from llm_parser.rules_engine import _rules_cache
+        _rules_cache.clear()
+        invalidate_prompt_cache()
+        logger.info(f"Wiki updated, caches cleared: {kwargs.get('slug')}")
+
+    async def _on_quote_expired(**kwargs):
+        logger.info(f"Quote expired: pricing_id={kwargs.get('pricing_id')}")
+
+    async def _on_evaluation_degraded(**kwargs):
+        logger.warning(f"Quality degradation: {kwargs}")
+
+    bus.subscribe("wiki.page_updated", _on_wiki_updated)
+    bus.subscribe("quote.expired", _on_quote_expired)
+    bus.subscribe("evaluation.degraded", _on_evaluation_degraded)
+
     if sm is not None:
         async with sm.run():
             yield
@@ -82,6 +103,7 @@ app = FastAPI(title="Smart BI", version="1.0.0", lifespan=_mcp_lifespan)
 app.mount("/mcp", _mcp_asgi)
 
 # Middleware stack: outermost → innermost
+app.add_middleware(APIKeyAuthMiddleware)  # 最外层，在 ErrorHandler 之前
 app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(TimingMiddleware)
 app.add_middleware(RequestIDMiddleware)
@@ -107,6 +129,7 @@ async def serve_index():
 app.include_router(admin_router)
 app.include_router(pricing_router)
 app.include_router(wiki_router)
+app.include_router(evaluation_router)
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
@@ -119,19 +142,26 @@ _RESULT_MAX_CHARS = 50000
 
 
 def _write_audit_log(session_id: str, raw_input: str, parsed: dict,
-                     sql: str | None, row_count: int, summary: str | None) -> None:
+                     sql: str | None, row_count: int, summary: str | None,
+                     columns: list | None = None, rows: list | None = None) -> None:
     """Persist query execution to audit_log table (fire-and-forget)."""
     try:
         conn = get_conn()
         try:
             with conn.cursor() as cur:
+                result_hash = ""
+                if rows:
+                    import hashlib
+                    result_hash = hashlib.sha256(
+                        json.dumps({"columns": columns, "rows": rows[:20]}, ensure_ascii=False, default=str).encode()
+                    ).hexdigest()
                 cur.execute(
                     """INSERT INTO audit_log (request_id, session_id, raw_input, resolved_params,
-                       sql_executed, result_rows, response_to_user)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                       sql_executed, result_rows, result_hash, response_to_user)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     (str(uuid.uuid4())[:8], session_id, raw_input,
                      json.dumps(parsed, ensure_ascii=False) if parsed else None,
-                     sql, row_count, _safe_truncate(summary or "", 2000)),
+                     sql, row_count, result_hash, _safe_truncate(summary or "", 2000)),
                 )
             conn.commit()
         finally:
@@ -401,7 +431,7 @@ def delete_session(session_id: str):
 @app.post("/api/reload-rules")
 def api_reload_rules():
     reload_rules()
-    invalidate_cache()
+    invalidate_prompt_cache()
     cfg = load_dimension_config()
     TradeQueryBuilder.configure_dimensions(cfg.get("dimensions", {}))
     return {"status": "ok", "message": "Rules and prompt cache refreshed"}
@@ -538,7 +568,7 @@ async def query(request: Request):
         "validation_warnings": [],
         "sql_validated": True,
     }
-    _write_audit_log(session_id, text, parsed, sql, len(rows), result.get("summary"))
+    _write_audit_log(session_id, text, parsed, sql, len(rows), result.get("summary"), cols, rows)
     return result
 
 
