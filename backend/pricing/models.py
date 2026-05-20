@@ -63,6 +63,8 @@ class QuoteResult:
     currency_pair: str = ""
     direction: str = ""
     amount: Optional[float] = None
+    notional_amount: Optional[float] = None  # 等值人民币金额
+    discount_bp: int = 0  # 优惠点差（bp）
     value_date: str = ""
     created_at: str = ""
 

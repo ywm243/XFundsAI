@@ -122,6 +122,7 @@ function onExpired() {
 
             <!-- Rate display -->
             <div class="quote-rate">{{ quote.customer_rate }}</div>
+            <div v-if="quote.market_rate" class="market-rate">市场价 {{ quote.market_rate }}</div>
 
             <!-- Meta info -->
             <div class="quote-meta">
@@ -183,6 +184,7 @@ function onExpired() {
 
           <!-- Rate display -->
           <div class="quote-rate">{{ quote.customer_rate }}</div>
+          <div v-if="quote.market_rate" class="market-rate">市场价 {{ quote.market_rate }}</div>
 
           <!-- Meta info -->
           <div class="quote-meta">
@@ -327,6 +329,12 @@ function onExpired() {
   color: var(--accent);
   margin: 4px 0;
   font-family: var(--font-mono);
+}
+
+.market-rate {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
 }
 
 .quote-meta {

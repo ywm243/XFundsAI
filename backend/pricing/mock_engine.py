@@ -85,16 +85,30 @@ class MockPricingEngine:
         spread_bp = int(round(abs(customer_rate - base_rate) * 10000))
         now = datetime.now()
 
+        # 市场汇率（供前端展示价差全貌）
+        market_rate_val = base_rate
+        if product_type == "SWAP" and 'market_rate' in dir():
+            market_rate_val = market_rate
+
+        # 等值人民币金额
+        notional = None
+        if params.amount and "/CNY" in pair:
+            notional = round(params.amount * customer_rate, 2)
+
+        # 优惠点差（模拟：大额交易享受 3-8 bp 优惠）
+        discount_bp = self._rng.randint(3, 8) if params.amount and params.amount > 100000 else 0
+
         return QuoteResult(
             quote_id=f"QT{now.strftime('%Y%m%d%H%M%S')}{self._rng.randint(1000,9999)}",
             customer_rate=round(customer_rate, 4),
-            market_rate=round(getattr(locals().get('market_rate', None), 'market_rate', base_rate)
-                              if product_type == "SWAP" else base_rate, 4),
+            market_rate=round(market_rate_val, 4),
             spread_bp=spread_bp,
             product_type=product_type,
             currency_pair=pair,
             direction=params.direction or "B",
             amount=params.amount,
+            notional_amount=notional,
+            discount_bp=discount_bp,
             value_date=self._value_date(product_type, params.tenor),
             created_at=now.isoformat() + "+08:00",
         )
