@@ -35,6 +35,9 @@ from services.result_formatter import (
     merge_comparison_into_rows,
 )
 from services.context_inherit import inherit_params_from_context, inherit_dates_from_context
+from backend.middleware.error_handler import ErrorHandlerMiddleware
+from backend.middleware.timing import TimingMiddleware
+from backend.middleware.request_id import RequestIDMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,11 @@ async def _mcp_lifespan(app: FastAPI):
 
 app = FastAPI(title="Smart BI", version="1.0.0", lifespan=_mcp_lifespan)
 app.mount("/mcp", _mcp_asgi)
+
+# Middleware stack: outermost → innermost
+app.add_middleware(ErrorHandlerMiddleware)
+app.add_middleware(TimingMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 # ── Static files ──────────────────────────────────────────────────────────────
 
@@ -537,7 +545,8 @@ async def query(request: Request):
 # ── LangGraph orchestration endpoint ──────────────────────────────────────────
 
 from langgraph.pipeline import build_main_graph
-_langgraph_app = build_main_graph()
+from backend.langgraph.checkpointer import MySqlCheckpointer
+_langgraph_app = build_main_graph(checkpointer=MySqlCheckpointer())
 
 
 @app.post("/api/chat")
