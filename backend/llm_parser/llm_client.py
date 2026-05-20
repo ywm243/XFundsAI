@@ -8,6 +8,7 @@ import re
 from openai import OpenAI
 from llm_parser.quality_router import quality_router
 from db.mysql_store import insert_token_usage
+from tools.registry import ToolRegistry
 import time
 import threading
 
@@ -26,6 +27,7 @@ def _write_token_log_async(request_id: str, session_id: str, call_site: str,
                           model_tier, model_name, prompt_tokens,
                           completion_tokens, total_tokens, duration_ms)
     except Exception:
+        logger.debug("token_usage_log write failed for %s", request_id, exc_info=True)
         pass  # 写入失败不影响业务
 
 
@@ -105,11 +107,13 @@ def llm_parse(text: str, system_prompt: str,
         usage = response.usage
         if usage:
             duration_ms = (time.monotonic() - t0) * 1000
-            threading.Thread(target=_write_token_log_async, args=(
+            t = threading.Thread(target=_write_token_log_async, args=(
                 request_id, session_id, task, profile["tier"], model,
                 usage.prompt_tokens, usage.completion_tokens,
                 usage.total_tokens, duration_ms
-            )).start()
+            ))
+            t.daemon = True
+            t.start()
 
         content = response.choices[0].message.content
         if not content:
@@ -172,17 +176,43 @@ def llm_chat(system_prompt: str, user_prompt: str,
         usage = response.usage
         if usage:
             duration_ms = (time.monotonic() - t0) * 1000
-            threading.Thread(target=_write_token_log_async, args=(
+            t = threading.Thread(target=_write_token_log_async, args=(
                 request_id, session_id, task, profile["tier"], model,
                 usage.prompt_tokens, usage.completion_tokens,
                 usage.total_tokens, duration_ms
-            )).start()
+            ))
+            t.daemon = True
+            t.start()
 
         content = response.choices[0].message.content
         return content or None
     except Exception as exc:
         logger.warning("LLM chat call failed: %s", exc)
         return None
+
+
+def _attempt_repair(args: dict, schema: dict, error) -> dict:
+    """尝试修复常见的 LLM 输出错误（缺失必填字段填充默认值、类型转换）"""
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
+    for key in required:
+        if key not in args and key in properties:
+            default = properties[key].get("default")
+            if default is not None:
+                args[key] = default
+        if key in args and key in properties:
+            ptype = properties[key].get("type", "")
+            if ptype == "number" and isinstance(args[key], str):
+                try:
+                    args[key] = float(args[key])
+                except ValueError:
+                    pass
+            elif ptype == "integer" and isinstance(args[key], str):
+                try:
+                    args[key] = int(args[key])
+                except ValueError:
+                    pass
+    return args
 
 
 def llm_tool_call(
@@ -221,7 +251,7 @@ def llm_tool_call(
         return None
 
     # 如果 task 在 QualityRouter 中，用 profile 覆盖调用方传入的默认值
-    if task in QualityRouter.TASK_PROFILES:
+    if task in quality_router.TASK_PROFILES:
         profile = quality_router.route(task, context_size_hint)
         model = profile["model"]
         max_tokens = profile["max_tokens"]
@@ -251,11 +281,13 @@ def llm_tool_call(
         usage = response.usage
         if usage:
             duration_ms = (time.monotonic() - t0) * 1000
-            threading.Thread(target=_write_token_log_async, args=(
+            t = threading.Thread(target=_write_token_log_async, args=(
                 request_id, session_id, task, tier, model,
                 usage.prompt_tokens, usage.completion_tokens,
                 usage.total_tokens, duration_ms
-            )).start()
+            ))
+            t.daemon = True
+            t.start()
 
         choice = response.choices[0]
         msg = choice.message
@@ -267,6 +299,24 @@ def llm_tool_call(
                     args = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     args = {}
+                # JSON Schema validation + auto-repair
+                fn_name = tc.function.name
+                tool_def = ToolRegistry.get(fn_name)
+                if tool_def and tool_def.input_schema:
+                    try:
+                        import jsonschema
+                        jsonschema.validate(args, tool_def.input_schema)
+                    except jsonschema.ValidationError as e:
+                        logger.warning(
+                            "Tool call schema validation failed for %s: %s",
+                            fn_name, e.message,
+                        )
+                        try:
+                            args = _attempt_repair(args, tool_def.input_schema, e)
+                        except Exception:
+                            pass
+                    except ImportError:
+                        pass  # jsonschema not installed, skip validation
                 calls.append({
                     "id": tc.id,
                     "function": tc.function.name,
