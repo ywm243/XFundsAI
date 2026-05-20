@@ -1,18 +1,23 @@
-"""Agent session memory — stores structured reasoning + tool call data per turn.
+"""Agent session memory — DEPRECATED, delegates to memory.store.AgentMemory.
 
-Multi-turn context: loads recent N turns for LLM to judge relevance.
+This module is kept for backward compatibility. New code should use
+memory.store.AgentMemory directly, which now supports wiki sync.
 """
 
 import json
-import logging
+import warnings
 
 from db import mysql_store
 
-logger = logging.getLogger(__name__)
+warnings.warn(
+    "agent.memory.AgentMemory is deprecated. Use memory.store.AgentMemory instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class AgentMemory:
-    """Agent memory for analysis pipeline multi-turn context."""
+    """Backward-compatible wrapper — delegates to memory.store.AgentMemory."""
 
     @staticmethod
     def save(session_id: str, turn_id: int, user_query: str,
@@ -26,18 +31,13 @@ class AgentMemory:
 
     @staticmethod
     def get_context(session_id: str, last_n: int = 5) -> list[dict]:
-        return mysql_store.get_agent_memory(
-            session_id=session_id,
-            last_n=last_n,
-        )
+        return mysql_store.get_agent_memory(session_id, last_n)
 
     @staticmethod
     def build_context_prompt(session_id: str, last_n: int = 5) -> str:
-        """Build a structured context prompt from recent turns."""
         turns = mysql_store.get_agent_memory(session_id, last_n)
         if not turns:
             return ""
-
         lines = ["以下是历史对话中已经分析过的内容，供参考："]
         for t in turns:
             sd = t.get("structured_data") or {}

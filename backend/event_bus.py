@@ -19,6 +19,7 @@ class EventBus:
         "trade.failed":        "交易执行失败",
         "market.rate_changed": "汇率变动",
         "customer.risk_alert": "客户风险等级与产品不匹配",
+        "wiki.page_updated":  "wiki页面创建或更新",
     }
 
     def __init__(self):
@@ -35,10 +36,18 @@ class EventBus:
     async def publish(self, event: str, **kwargs) -> None:
         if event not in self.EVENTS:
             raise ValueError(f"Unknown event: {event}")
-        await asyncio.gather(
+        if not self._handlers[event]:
+            return
+        results = await asyncio.gather(
             *(handler(**kwargs) for handler in self._handlers[event]),
             return_exceptions=True
         )
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Event %s handler[%d] failed: %s", event, i, result
+                )
 
 
 # 全局单例

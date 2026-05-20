@@ -159,3 +159,42 @@ class AgentMemory:
             return [item for _, item in scored[:limit]]
         finally:
             conn.close()
+
+    # ---- Wiki sync ----
+
+    def add_turn_with_wiki(self, session_id: str, turn_index: int, user_query: str,
+                           parsed_params: dict | None = None,
+                           executed_sql: str | None = None,
+                           result_summary: str | None = None,
+                           user_feedback: str | None = None,
+                           customer_id: str = "") -> int:
+        """Record a turn AND sync important turns to wiki.
+
+        A turn is 'important' if it has user_feedback or pricing-related data.
+        """
+        turn_id = self.add_turn(session_id, turn_index, user_query,
+                                parsed_params, executed_sql, result_summary, user_feedback)
+
+        is_important = (user_feedback == "positive" or
+                        (parsed_params and parsed_params.get("product_type")))
+        if is_important and customer_id:
+            try:
+                from wiki.store import wiki_store
+                slug = f"entity-{customer_id}"
+                existing = wiki_store.get(slug)
+                fm = existing.get("frontmatter", {}) if existing else {}
+                if isinstance(fm, str):
+                    import json as _json
+                    fm = _json.loads(fm)
+                queries = fm.get("recent_queries", [])
+                queries.append({"q": user_query, "params": parsed_params})
+                fm["recent_queries"] = queries[-10:]
+                body = existing["body"] if existing else f"客户 {customer_id} 的画像页面。"
+                wiki_store.save(
+                    slug=slug, title=f"客户 {customer_id}", page_type="entity",
+                    body=body, frontmatter=fm, tags=["customer"],
+                )
+            except Exception:
+                pass
+
+        return turn_id

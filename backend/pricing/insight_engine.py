@@ -2,11 +2,20 @@
 """客户智能洞察引擎 — 基于记忆和画像的主动分析推送"""
 
 from __future__ import annotations
+import json
+import logging
+from datetime import datetime
 from typing import Optional
 
 from .models import PricingIntent, QuoteResult
 from db import mysql_store
 from event_bus import bus
+
+logger = logging.getLogger(__name__)
+
+
+def _now_iso():
+    return datetime.now().isoformat()
 
 
 class InsightEngine:
@@ -16,13 +25,64 @@ class InsightEngine:
         bus.subscribe("quote.created", self.on_quote_created)
         bus.subscribe("trade.executed", self.on_trade_executed)
 
-    async def on_quote_created(self, pricing_id: str, intent_type: str, **kwargs):
-        """新报价生成时 — 预留处理"""
-        pass
+    async def on_quote_created(self, pricing_id: str, intent_type: str,
+                                customer_id: str = "", **kwargs):
+        """新报价生成时 — 写入客户 wiki 的询价历史"""
+        if not customer_id:
+            return
+        try:
+            from wiki.store import wiki_store
+            slug = f"entity-{customer_id}"
+            existing = wiki_store.get(slug)
+            if existing:
+                fm = existing.get("frontmatter") or {}
+                if isinstance(fm, str):
+                    fm = json.loads(fm)
+                inquiry_count = fm.get("inquiry_count", 0) + 1
+                fm["inquiry_count"] = inquiry_count
+                fm["last_inquiry_at"] = _now_iso()
+                wiki_store.save(
+                    slug=slug, title=existing["title"], page_type="entity",
+                    body=existing["body"], frontmatter=fm,
+                    sources=existing.get("sources"), tags=existing.get("tags"),
+                )
+            else:
+                wiki_store.save(
+                    slug=slug, title=f"客户 {customer_id}", page_type="entity",
+                    body=f"客户 {customer_id} 的画像页面。\n\n## 询价历史\n\n- 首次询价",
+                    frontmatter={"inquiry_count": 1, "last_inquiry_at": _now_iso()},
+                    tags=["customer"],
+                )
+            await bus.publish("wiki.page_updated", slug=slug, source="quote.created")
+        except Exception as e:
+            logger.warning("Failed to update wiki on quote.created: %s", e)
 
-    async def on_trade_executed(self, pricing_id: str, trade_id: str, **kwargs):
-        """交易完成时 — 预留处理"""
-        pass
+    async def on_trade_executed(self, pricing_id: str, trade_id: str,
+                                 customer_id: str = "", **kwargs):
+        """交易完成时 — 更新客户 wiki 的交易记录"""
+        if not customer_id:
+            return
+        try:
+            from wiki.store import wiki_store
+            slug = f"entity-{customer_id}"
+            existing = wiki_store.get(slug)
+            if existing:
+                fm = existing.get("frontmatter") or {}
+                if isinstance(fm, str):
+                    fm = json.loads(fm)
+                trade_count = fm.get("trade_count", 0) + 1
+                fm["trade_count"] = trade_count
+                fm["last_trade_at"] = _now_iso()
+                body = existing["body"]
+                body += f"\n- 成交：trade_id={trade_id}，pricing_id={pricing_id}"
+                wiki_store.save(
+                    slug=slug, title=existing["title"], page_type="entity",
+                    body=body, frontmatter=fm,
+                    sources=existing.get("sources"), tags=existing.get("tags"),
+                )
+            await bus.publish("wiki.page_updated", slug=slug, source="trade.executed")
+        except Exception as e:
+            logger.warning("Failed to update wiki on trade.executed: %s", e)
 
     async def generate_insights(self, customer_id: str,
                                 current_intent: PricingIntent,

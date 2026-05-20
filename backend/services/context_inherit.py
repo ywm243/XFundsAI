@@ -94,3 +94,22 @@ def inherit_dates_from_context(context: list | None) -> dict | None:
             if ds and de:
                 return {"date_start": ds, "date_end": de}
     return None
+
+
+def inherit_params_from_wiki(customer_id: str, current: dict) -> dict | None:
+    """Try to inherit params from wiki customer profile. Returns inherited dict or None."""
+    if not customer_id:
+        return None
+    try:
+        from wiki.query import get_customer_profile
+        profile = get_customer_profile(customer_id)
+        if not profile:
+            return None
+        fm = profile.get("frontmatter", {})
+        inherited = {}
+        for key in _INHERIT_PARAMS:
+            if (not current.get(key) or current[key] in ("", None, [])) and fm.get(key):
+                inherited[key] = fm[key]
+        return inherited if inherited else None
+    except Exception:
+        return None

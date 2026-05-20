@@ -28,6 +28,7 @@ from db.mysql_store import init_db, get_conn, _auto_migrate
 from admin_routes import router as admin_router
 from backend.pricing.routes import router as pricing_router, init_pricing_service
 from backend.event_bus import bus
+from backend.wiki.routes import router as wiki_router
 from services.query_service import build_sql, execute_query_sync, fetch_breakdown_text
 from services.result_formatter import (
     build_summary, build_chart_option, build_insights,
@@ -97,6 +98,7 @@ async def serve_index():
 
 app.include_router(admin_router)
 app.include_router(pricing_router)
+app.include_router(wiki_router)
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 

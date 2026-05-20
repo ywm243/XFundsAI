@@ -28,7 +28,26 @@ class RiskGuard:
 
     def pre_check(self, customer_id: str, customer_info: dict | None,
                   product_type: str = "", amount: float = 0) -> tuple[bool, Optional[str]]:
-        """询价前综合风控：制裁→账户→产品权限→金额阈值"""
+        """询价前综合风控：制裁→账户→产品权限→金额阈值。Wiki 回退：无 customer_info 时从 wiki 读客户画像。"""
+        # Wiki fallback: if no customer_info provided, try reading from wiki
+        if not customer_info and customer_id:
+            try:
+                from wiki.query import get_customer_profile
+                profile = get_customer_profile(customer_id)
+                if profile:
+                    fm = profile.get("frontmatter", {})
+                    customer_info = {
+                        "account_status": fm.get("account_status", "ACTIVE"),
+                        "customer_type": fm.get("customer_type", ""),
+                        "sanctions_status": fm.get("sanctions_status", "clear"),
+                        "product_permissions": fm.get("product_permissions", []),
+                    }
+            except Exception:
+                customer_info = customer_info or {}
+
+        if not customer_info:
+            customer_info = {}
+
         ok, reason = self.check_sanctions(customer_info)
         if not ok:
             return False, reason

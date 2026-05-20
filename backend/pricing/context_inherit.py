@@ -73,3 +73,21 @@ def _is_followup(context: list[dict]) -> bool:
             last_user = str(item.get("content", ""))
             break
     return any(sig in last_user for sig in FOLLOW_UP_SIGNALS)
+
+
+def inherit_from_wiki(customer_id: str, current: PricingIntent) -> PricingIntent:
+    """Try to inherit pricing params from wiki customer profile."""
+    if not customer_id:
+        return current
+    try:
+        from wiki.query import get_customer_profile
+        profile = get_customer_profile(customer_id)
+        if not profile:
+            return current
+        fm = profile.get("frontmatter", {})
+        for key in ("product_type", "tenor", "currency_pair"):
+            if not getattr(current, key, None) and fm.get(key):
+                setattr(current, key, fm[key])
+    except Exception:
+        pass
+    return current
