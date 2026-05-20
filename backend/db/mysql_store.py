@@ -621,6 +621,27 @@ def get_session_context(session_id: str, last_n: int = 3) -> list[dict]:
         conn.close()
 
 
+def get_summaries(session_id: str, last_n: int = 10) -> list[dict]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM memory_summaries WHERE session_id=%s
+                   ORDER BY created_at DESC LIMIT %s""",
+                (session_id, last_n),
+            )
+            rows = cur.fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                if isinstance(d.get("content"), str):
+                    d["content"] = json.loads(d["content"])
+                result.append(d)
+            return list(reversed(result))
+    finally:
+        conn.close()
+
+
 def add_summary(session_id: str, summary_type: str, content: dict,
                 source_turns: str | None = None) -> int:
     with _lock:
