@@ -1,5 +1,16 @@
 """QualityRouter — 按任务复杂度路由到最优模型，提升准确性"""
 import os
+import logging
+from typing import TypedDict
+
+logger = logging.getLogger(__name__)
+
+
+class RouteResult(TypedDict):
+    model: str
+    tier: str
+    max_tokens: int
+    temperature: float
 
 
 class QualityRouter:
@@ -27,10 +38,9 @@ class QualityRouter:
         "insight_generate":{"tier": "pro",   "max_tokens": 1024, "temperature": 0.3},
     }
 
-    # 长上下文解析时升级到 Pro 的阈值
     CONTEXT_UPGRADE_THRESHOLD = 4000
 
-    def route(self, task: str, context_size_hint: int = 0) -> dict:
+    def route(self, task: str, context_size_hint: int = 0) -> RouteResult:
         """返回 {model, tier, max_tokens, temperature}
 
         Args:
@@ -38,13 +48,17 @@ class QualityRouter:
             context_size_hint: 上下文大小估计（字符数），用于决定是否升级到 Pro
         """
         if task not in self.TASK_PROFILES:
+            logger.warning("Unknown task '%s', falling back to bi_parse", task)
             profile = dict(self.TASK_PROFILES["bi_parse"])
         else:
             profile = dict(self.TASK_PROFILES[task])
 
         # 长上下文解析自动升级到 Pro，保证准确
-        if profile["tier"] == "flash" and task in ("bi_parse", "pricing_parse") \
-           and context_size_hint > self.CONTEXT_UPGRADE_THRESHOLD:
+        if (
+            profile["tier"] == "flash"
+            and task in ("bi_parse", "pricing_parse")
+            and context_size_hint > self.CONTEXT_UPGRADE_THRESHOLD
+        ):
             profile["tier"] = "pro"
 
         profile["model"] = self.MODEL_TIERS[profile["tier"]]
