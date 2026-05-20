@@ -7,9 +7,9 @@ import InputArea from './components/InputArea.vue'
 import AdminRules from './views/AdminRules.vue'
 import Sidebar from './components/Sidebar.vue'
 import WelcomeGuide from './components/WelcomeGuide.vue'
-import { checkHealth, parseQuery, executeQuery,
+import { checkHealth, executeChat,
          createSession, listSessions, getSession, saveTurn,
-         pricingInquiry, pricingConfirm, pricingRefresh, pricingCancel } from './api.js'
+         pricingConfirm, pricingRefresh, pricingCancel } from './api.js'
 
 const connectionStatus = ref('checking')
 const messages = reactive([])
@@ -115,48 +115,44 @@ async function handleSend(text) {
   messages.push({ type: 'bot', mode: 'loading' })
   inputAreaRef.value?.focus()
 
-  // 检测询报价意图
-  const pricingKeywords = ['询价', '报价', '结汇', '购汇', '成交', '点差', '比价', '价格']
-  const isPricing = pricingKeywords.some(kw => text.includes(kw))
-
-  if (isPricing) {
-    messages[botIdx] = { type: 'bot', mode: 'loading' }
-    try {
-      const context = buildContext()
-      const result = await pricingInquiry(text, {}, {
-        sessionId: sessionId.value,
-        context,
-      })
-      // Merge insights if available
-      if (result.insights && result.insights.length > 0) {
-        result.insights = result.insights
-      }
-      messages[botIdx] = { type: 'bot', mode: result.mode || 'pricing_single', data: result }
-    } catch (err) {
-      messages[botIdx] = { type: 'bot', mode: 'error', error: err.message }
-    }
-    _persistTurn()
-    return
-  }
-
-  // Check if this is an analytical question (为什么/原因/分析)
-  const isAnalytical = /为什么|原因|分析|怎么回事|解释/.test(text)
-
   try {
-    if (isAnalytical && messages.length > 1) {
-      // Analytical question → use mode=analyze pipeline
-      const context = buildContext()
-      const resp = await fetch('/api/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, context, mode: 'analyze' }),
-      })
-      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || `HTTP ${resp.status}`)
-      const result = await resp.json()
-      if (result.error) {
-        messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
-        return
+    const context = buildContext()
+    const result = await executeChat(text, sessionId.value, { context })
+
+    // 路由拒绝 → 显示错误
+    if (result.router_decision?.status === 'rejected') {
+      messages[botIdx] = {
+        type: 'bot',
+        mode: 'error',
+        error: result.router_decision.reason || '查询超出系统能力范围',
       }
+      return
+    }
+
+    // 需要确认 → 显示确认卡片
+    if (result.router_decision?.status === 'confirm') {
+      messages[botIdx] = {
+        type: 'bot',
+        mode: 'confirm',
+        params: result.resolved_params || result.params || {},
+        needs_confirm: result.needs_confirm || [],
+      }
+      return
+    }
+
+    // 定价模式 → 显示报价卡片
+    if (result.mode && result.mode.startsWith('pricing')) {
+      messages[botIdx] = {
+        type: 'bot',
+        mode: result.mode,
+        data: result,
+      }
+      _persistTurn(text, result.params || {}, null, result)
+      return
+    }
+
+    // 分析模式 → 显示分析结果卡片
+    if (result.mode === 'analyze') {
       messages[botIdx] = {
         type: 'bot',
         mode: 'result_card',
@@ -172,6 +168,8 @@ async function handleSend(text) {
           insights: result.insights || [],
           comparison: result.comparison || null,
           analysis_data: result.analysis_data || null,
+          validation_warnings: result.validation_warnings || [],
+          sql_validated: result.sql_validated !== false,
           mode: 'analyze',
         },
       }
@@ -180,79 +178,51 @@ async function handleSend(text) {
         rows: result.rows || [],
         row_count: result.row_count || 0,
         sql: result.sql || '',
-        comparison_sql: result.comparison_sql || null,
         params: result.params || {},
         summary: result.summary || '',
-        chartOption: result.chartOption || null,
         insights: result.insights || [],
-        comparison: result.comparison || null,
         analysis_data: result.analysis_data || null,
         mode: 'analyze',
       })
-    } else {
-      // Data query → parse → execute
-      const context = buildContext()
-      const parseResult = await parseQuery(text, context)
-      if (parseResult.error) {
-        messages[botIdx] = { type: 'bot', mode: 'error', error: parseResult.error }
-        return
-      }
-      // 直接执行查询
-      const result = await executeQuery(parseResult.params, context)
-      if (result.error) {
-        messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
-        return
-      }
-      // 同比/环比需要用户确认日期
-      if (result.confirm_date) {
-        messages[botIdx] = {
-          type: 'bot',
-          mode: 'confirm',
-          params: result.params,
-          pipeline: parseResult.pipeline,
-        }
-        return
-      }
-      messages[botIdx] = {
-        type: 'bot',
-        mode: 'result_card',
-        data: {
-          columns: result.columns,
-          rows: result.rows,
-          row_count: result.row_count,
-          sql: result.sql,
-          comparison_sql: result.comparison_sql,
-          params: result.params,
-          comparison: result.comparison,
-          summary: result.summary,
-          chartOption: result.chartOption,
-          insights: result.insights,
-        },
-      }
-      _persistTurn(text, parseResult.params, result.sql, {
-        columns: result.columns,
-        rows: result.rows,
-        row_count: result.row_count,
-        sql: result.sql,
-        comparison_sql: result.comparison_sql,
-        params: result.params,
-        comparison: result.comparison,
-        summary: result.summary,
-        chartOption: result.chartOption,
-        insights: result.insights,
-      })
+      return
     }
 
-    // --- 原确认环节（注释掉）---
-    // messages[botIdx] = {
-    //   type: 'bot',
-    //   mode: 'confirm',
-    //   params: parseResult.params,
-    //   pipeline: parseResult.pipeline,
-    //   originalText: text,
-    //   querying: false,
-    //   resetting: false,
-    // }
+    // 标准 BI 查询 → 显示结果卡片
+    if (result.error) {
+      messages[botIdx] = { type: 'bot', mode: 'error', error: result.error }
+      return
+    }
+
+    messages[botIdx] = {
+      type: 'bot',
+      mode: 'result_card',
+      data: {
+        columns: result.columns || [],
+        rows: result.rows || [],
+        row_count: result.row_count || 0,
+        sql: result.sql || '',
+        comparison_sql: result.comparison_sql || null,
+        params: result.params || {},
+        comparison: result.comparison || null,
+        summary: result.summary || '',
+        chartOption: result.chartOption || null,
+        insights: result.insights || [],
+        validation_warnings: result.validation_warnings || [],
+        sql_validated: result.sql_validated !== false,
+      },
+    }
+    _persistTurn(text, result.params, result.sql, {
+      columns: result.columns,
+      rows: result.rows,
+      row_count: result.row_count,
+      sql: result.sql,
+      comparison_sql: result.comparison_sql,
+      params: result.params,
+      comparison: result.comparison,
+      summary: result.summary,
+      chartOption: result.chartOption,
+      insights: result.insights,
+    })
   } catch (err) {
     messages[botIdx] = { type: 'bot', mode: 'error', error: err.message || String(err) }
   }

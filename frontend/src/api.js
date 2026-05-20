@@ -154,6 +154,26 @@ export async function pricingCancel(pricingId) {
   return resp.json()
 }
 
+// ---- 统一 Chat 入口 (Phase 5 — 管线统一) ----
+
+export async function executeChat(userText, sessionId, options = {}) {
+  const body = {
+    user_text: userText,
+    session_id: sessionId || '',
+  }
+  if (options.context) body.context = options.context
+  const resp = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.error || err.detail || `请求失败 (${resp.status})`)
+  }
+  return resp.json()
+}
+
 // Wiki knowledge base
 export const wikiSearch = (keyword) =>
   fetch(`${API_BASE}/wiki/search?keyword=${encodeURIComponent(keyword)}&limit=10`).then(r => r.json())
