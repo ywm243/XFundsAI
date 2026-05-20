@@ -28,6 +28,7 @@ from .models import (
     ValidationResult,
 )
 from .risk_guard import RiskGuard
+from .insight_engine import InsightEngine
 from .state_machine import InvalidTransitionError, PricingStateMachine
 from .trade_executor import TradeExecutor
 from .validator import validate_direct_trade, validate_intent
@@ -55,6 +56,7 @@ class PricingService:
         self.engine_client = engine_client or PricingEngineClient()
         self.trade_executor = TradeExecutor(self.engine_client)
         self.risk_guard = RiskGuard()
+        self.insight_engine = InsightEngine()
         self.validity_minutes = validity_minutes
         # 情景配置：SCENARIO 模式下使用的期限列表
         self._scenarios: list[str] = ["1M", "3M", "6M", "1Y"]
@@ -242,6 +244,16 @@ class PricingService:
         if is_sandbox:
             response["sandbox_mode"] = True
             response["show_trade_button"] = False
+
+        # 客户洞察（基于记忆和偏好）
+        try:
+            insights = await self.insight_engine.generate_insights(
+                customer_id, intent, quotes
+            )
+            if insights:
+                response["insights"] = insights
+        except Exception:
+            pass  # 洞察生成失败不影响主流程
 
         return response
 

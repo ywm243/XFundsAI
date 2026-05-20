@@ -84,6 +84,37 @@ async def cancel(req: ActionRequest):
     return await service.handle_cancel(pricing_id=req.pricing_id)
 
 
+@router.get("/chart")
+async def rate_chart(pair: str = "USD/CNY", days: int = 30):
+    """汇率走势图数据（预埋模拟数据）"""
+    import random
+    from datetime import datetime, timedelta
+
+    rng = random.Random(hash(pair) % (2**31))
+    base_rates = {
+        "USD/CNY": 7.2450, "EUR/CNY": 7.8520, "GBP/CNY": 9.1680,
+        "JPY/CNY": 0.0468, "EUR/USD": 1.0837,
+    }
+    base = base_rates.get(pair, 7.2000)
+    dates = []
+    values = []
+    current = base
+    for i in range(days):
+        date = (datetime.now() - timedelta(days=days - i)).strftime("%m-%d")
+        jitter = rng.randint(-80, 80) / 10000
+        current = round(base + jitter, 4)
+        dates.append(date)
+        values.append(current)
+
+    return {
+        "pair": pair,
+        "days": days,
+        "dates": dates,
+        "values": values,
+        "unit": "CNY" if "/CNY" in pair else "USD",
+    }
+
+
 @router.get("/status/{pricing_id}")
 async def status(pricing_id: str):
     from db import mysql_store
