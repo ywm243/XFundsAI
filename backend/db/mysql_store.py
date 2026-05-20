@@ -176,6 +176,25 @@ CREATE TABLE IF NOT EXISTS pricing_audit_log (
     INDEX idx_pricing (pricing_id),
     INDEX idx_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS wiki_pages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    slug VARCHAR(128) NOT NULL,
+    title VARCHAR(256) NOT NULL,
+    page_type ENUM('concept','entity','reference','synthesis','source','stub') NOT NULL DEFAULT 'concept',
+    body MEDIUMTEXT NOT NULL,
+    frontmatter JSON NULL,
+    sources JSON NULL,
+    tags JSON NULL,
+    confidence FLOAT NULL,
+    reliability ENUM('high','mixed','unverified') NULL,
+    parent_slug VARCHAR(128) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_slug (slug),
+    INDEX idx_type (page_type),
+    INDEX idx_updated (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 
@@ -994,6 +1013,84 @@ def add_pricing_audit(pricing_id: str, action: str, detail: dict,
                  evidence_hash, evidence_type)
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---- Wiki pages ----
+
+def save_wiki_page(slug: str, title: str, page_type: str, body: str,
+                   frontmatter: dict | None = None, sources: list | None = None,
+                   tags: list | None = None, confidence: float | None = None,
+                   reliability: str | None = None, parent_slug: str | None = None) -> int:
+    """Insert or update a wiki page. Returns page id."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO wiki_pages (slug, title, page_type, body, frontmatter, sources, tags, confidence, reliability, parent_slug)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    title=VALUES(title), page_type=VALUES(page_type), body=VALUES(body),
+                    frontmatter=VALUES(frontmatter), sources=VALUES(sources), tags=VALUES(tags),
+                    confidence=VALUES(confidence), reliability=VALUES(reliability),
+                    parent_slug=VALUES(parent_slug), updated_at=NOW()
+            """, (slug, title, page_type, body,
+                  json.dumps(frontmatter, ensure_ascii=False) if frontmatter else None,
+                  json.dumps(sources, ensure_ascii=False) if sources else None,
+                  json.dumps(tags, ensure_ascii=False) if tags else None,
+                  confidence, reliability, parent_slug))
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM wiki_pages WHERE slug=%s", (slug,))
+            return cur.fetchone()["id"]
+    finally:
+        conn.close()
+
+
+def get_wiki_page(slug: str) -> dict | None:
+    """Get a wiki page by slug."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM wiki_pages WHERE slug=%s", (slug,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def query_wiki_pages(page_type: str | None = None, tag: str | None = None,
+                     keyword: str | None = None, limit: int = 20) -> list[dict]:
+    """Search wiki pages by type, tag, or keyword in title/body."""
+    conn = get_conn()
+    try:
+        conditions, params = [], []
+        if page_type:
+            conditions.append("page_type=%s")
+            params.append(page_type)
+        if tag:
+            conditions.append("JSON_CONTAINS(tags, %s)")
+            params.append(json.dumps(tag))
+        if keyword:
+            conditions.append("(title LIKE %s OR body LIKE %s)")
+            params.extend([f"%{keyword}%", f"%{keyword}%"])
+        where = " AND ".join(conditions) if conditions else "1=1"
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM wiki_pages WHERE {where} ORDER BY updated_at DESC LIMIT %s", params + [limit])
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_wiki_page(slug: str) -> bool:
+    """Delete a wiki page by slug. Returns True if deleted."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM wiki_pages WHERE slug=%s", (slug,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
     finally:
         conn.close()
 
