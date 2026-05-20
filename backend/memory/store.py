@@ -170,7 +170,7 @@ class AgentMemory:
                 prompt += f"用户：{query}\n"
 
         try:
-            from backend.llm_parser.llm_client import llm_chat
+            from llm_parser.llm_client import llm_chat
             summary = llm_chat(
                 system_prompt="你是一个对话摘要生成器。输出一句中文摘要（50字以内），保留关键业务信息。",
                 user_prompt=prompt,

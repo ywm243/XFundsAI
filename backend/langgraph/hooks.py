@@ -20,7 +20,7 @@ class NodeHooks:
 
         def _log():
             try:
-                from backend.db.mysql_store import get_conn
+                from db.mysql_store import get_conn
                 conn = get_conn()
                 sql = """INSERT INTO tool_calls_log (tool_name, duration_ms, success)
                          VALUES (%s, %s, TRUE)"""

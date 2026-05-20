@@ -1,6 +1,6 @@
 """MCP 工具: wiki_get — 获取指定 slug 的 wiki 页面"""
 import logging
-from backend.tools.registry import ToolRegistry
+from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def wiki_get(slug: str) -> dict:
     """获取指定 slug 的 wiki 页面"""
     try:
-        from backend.wiki.store import wiki_store
+        from wiki.store import wiki_store
         if wiki_store is None:
             return {"found": False, "error": "wiki_store not initialized"}
         page = wiki_store.get(slug)

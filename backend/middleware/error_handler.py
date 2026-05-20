@@ -22,7 +22,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
 
             def _log_error() -> None:
                 try:
-                    from backend.db.mysql_store import insert_error_log
+                    from db.mysql_store import insert_error_log
 
                     insert_error_log(
                         rid, request.method, request.url.path,

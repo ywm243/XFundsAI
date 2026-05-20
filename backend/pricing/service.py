@@ -754,7 +754,7 @@ class PricingService:
         """事务性状态转换：先写 DB → 成功后改内存，失败回滚"""
         conn = None
         try:
-            from backend.db.mysql_store import get_conn
+            from db.mysql_store import get_conn
             conn = get_conn()
             record = {**session_data, "status": new_status}
             record.setdefault("last_activity", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

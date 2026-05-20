@@ -36,7 +36,7 @@ class ToolMonitor:
     @staticmethod
     def get_stats(tool_name: str = None, window_minutes: int = 60) -> dict:
         try:
-            from backend.db.mysql_store import get_conn
+            from db.mysql_store import get_conn
             conn = get_conn()
             try:
                 where = "created_at >= NOW() - INTERVAL %s MINUTE"
@@ -65,7 +65,7 @@ def _log_tool_call(tool_name: str, duration_ms: float, success: bool,
                    error_type: str = ""):
     def _write():
         try:
-            from backend.db.mysql_store import get_conn
+            from db.mysql_store import get_conn
             conn = get_conn()
             try:
                 sql = """INSERT INTO tool_calls_log

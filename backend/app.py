@@ -27,20 +27,20 @@ from llm_parser.prompt_builder import build_system_prompt, invalidate_cache as i
 from db.query_builder import TradeQueryBuilder
 from db.mysql_store import init_db, get_conn, _auto_migrate
 from admin_routes import router as admin_router
-from backend.pricing.routes import router as pricing_router, init_pricing_service
-from backend.event_bus import bus
-from backend.wiki.routes import router as wiki_router
-from backend.evaluation.routes import router as evaluation_router
+from pricing.routes import router as pricing_router, init_pricing_service
+from event_bus import bus
+from wiki.routes import router as wiki_router
+from evaluation.routes import router as evaluation_router
 from services.query_service import build_sql, execute_query_sync, fetch_breakdown_text
 from services.result_formatter import (
     build_summary, build_chart_option, build_insights,
     merge_comparison_into_rows,
 )
 from services.context_inherit import inherit_params_from_context, inherit_dates_from_context
-from backend.middleware.auth import APIKeyAuthMiddleware
-from backend.middleware.error_handler import ErrorHandlerMiddleware
-from backend.middleware.timing import TimingMiddleware
-from backend.middleware.request_id import RequestIDMiddleware
+from middleware.auth import APIKeyAuthMiddleware
+from middleware.error_handler import ErrorHandlerMiddleware
+from middleware.timing import TimingMiddleware
+from middleware.request_id import RequestIDMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ TradeQueryBuilder.configure_dimensions(_dimension_config.get("dimensions", {}))
 logger.info("Dimension config loaded (%d dimensions)", len(_dimension_config.get("dimensions", {})))
 
 # 初始化询报价服务
-with open("backend/knowledge_base/semantic_rules.json", "r", encoding="utf-8") as _f:
+with open("knowledge_base/semantic_rules.json", "r", encoding="utf-8") as _f:
     _rules = json.load(_f)
 _pricing_cfg = _rules.get("pricing", {})
 init_pricing_service(
@@ -575,8 +575,8 @@ async def query(request: Request):
 # ── LangGraph orchestration endpoint ──────────────────────────────────────────
 
 from langgraph.pipeline import build_main_graph
-from backend.langgraph.checkpointer import MySqlCheckpointer
-_langgraph_app = build_main_graph(checkpointer=MySqlCheckpointer())
+# from langgraph.checkpointer import MySqlCheckpointer
+_langgraph_app = build_main_graph()  # TODO: enable checkpointer after fixing BaseCheckpointSaver API
 
 
 @app.post("/api/chat")
@@ -597,7 +597,10 @@ async def api_chat(request: Request):
     )
 
     try:
-        final = await _langgraph_app.ainvoke(state)
+        final = await _langgraph_app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": session_id or request_id}}
+        )
 
         router_decision = final.get("router_decision", {})
         router_status = router_decision.get("status", "ok") if router_decision else "ok"

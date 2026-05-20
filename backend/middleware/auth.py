@@ -27,7 +27,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
     def _validate_key(self, api_key: str) -> bool:
         try:
             key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-            from backend.db.mysql_store import get_conn
+            from db.mysql_store import get_conn
             conn = get_conn()
             try:
                 with conn.cursor() as cur:

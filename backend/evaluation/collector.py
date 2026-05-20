@@ -29,7 +29,7 @@ class EvaluationCollector:
 
     def _extract_mismatches(self, state) -> list:
         try:
-            from backend.agent.post_validator import PostValidator
+            from agent.post_validator import PostValidator
             pv = PostValidator()
             mismatches = pv.validate(
                 getattr(state, "summary", ""),
@@ -42,7 +42,7 @@ class EvaluationCollector:
 
 def _write_eval_async(record: dict):
     try:
-        from backend.db.mysql_store import insert_evaluation_record
+        from db.mysql_store import insert_evaluation_record
         insert_evaluation_record(record)
     except Exception:
         pass

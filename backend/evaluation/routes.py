@@ -1,6 +1,6 @@
 """评估 API — 质量指标查询"""
 from fastapi import APIRouter, Query
-from backend.db.mysql_store import get_conn, query_evaluation_metrics, query_token_usage
+from db.mysql_store import get_conn, query_evaluation_metrics, query_token_usage
 
 router = APIRouter(prefix="/api/evaluation", tags=["evaluation"])
 

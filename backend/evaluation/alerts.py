@@ -34,7 +34,7 @@ class DegradationAlerts:
 
     def check(self):
         try:
-            from backend.db.mysql_store import get_conn
+            from db.mysql_store import get_conn
             conn = get_conn()
         except Exception:
             return
@@ -48,7 +48,7 @@ class DegradationAlerts:
             if row and row[0]:
                 rate = float(row[0])
                 if rate > self.THRESHOLDS["error_rate"]:
-                    from backend.event_bus import bus
+                    from event_bus import bus
                     bus.publish("evaluation.degraded", metric="error_rate",
                                 current=rate, threshold=self.THRESHOLDS["error_rate"])
                     logger.warning(f"Quality degradation: error_rate={rate:.2%}")

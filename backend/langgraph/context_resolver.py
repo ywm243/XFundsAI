@@ -8,7 +8,7 @@ import os
 import re
 from openai import OpenAI
 from langgraph.state import AgentState
-from backend.langgraph.context_assembler import ContextAssembler
+from langgraph.context_assembler import ContextAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def resolve_context(state: AgentState) -> dict:
     # ── Priority path: ContextAssembler (Wiki + conversation + memory) ──
     wiki_store = None
     try:
-        from backend.wiki.store import wiki_store as _ws  # noqa: F811
+        from wiki.store import wiki_store as _ws  # noqa: F811
         wiki_store = _ws
     except Exception:
         pass

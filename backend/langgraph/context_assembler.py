@@ -29,7 +29,7 @@ class ContextAssembler:
     @property
     def memory(self):
         if self._memory is None:
-            from backend.memory.store import AgentMemory
+            from memory.store import AgentMemory
             self._memory = AgentMemory()
         return self._memory
 
@@ -176,7 +176,7 @@ class ContextAssembler:
 
     def _build_agent_memory(self, session_id: str) -> str:
         try:
-            from backend.agent.memory import AgentMemory as AgentMem
+            from agent.memory import AgentMemory as AgentMem
             mem = AgentMem()
             return mem.build_context_prompt(session_id) or ""
         except Exception:

@@ -13,7 +13,7 @@ class SessionStrategy:
     @property
     def memory(self):
         if self._memory is None:
-            from backend.memory.store import AgentMemory
+            from memory.store import AgentMemory
             self._memory = AgentMemory()
         return self._memory
 

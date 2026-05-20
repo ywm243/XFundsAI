@@ -86,7 +86,7 @@ async def cancel(req: ActionRequest):
 
 @router.get("/status/{pricing_id}")
 async def status(pricing_id: str):
-    from backend.db import mysql_store
+    from db import mysql_store
     session = mysql_store.get_pricing_session(pricing_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

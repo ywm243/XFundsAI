@@ -1,6 +1,6 @@
 """MCP 工具: wiki_query_rules — 从 wiki 知识库动态读取匹配规则"""
 import logging
-from backend.tools.registry import ToolRegistry
+from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 async def wiki_query_rules(query_text: str, rule_categories: list[str] = None) -> dict:
     """从 wiki 读取匹配规则，补充 gatekeep 硬编码盲区"""
     try:
-        from backend.wiki.store import wiki_store
+        from wiki.store import wiki_store
         if wiki_store is None:
             return {"rules": [], "count": 0, "hint": "wiki_store not initialized"}
         keywords = set()

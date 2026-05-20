@@ -222,7 +222,7 @@ def invalidate_cache() -> None:
 def _match_wiki_concepts(query_text: str) -> str | None:
     """关键词匹配 wiki 概念页，提取相关规则片段（上限 1200 tokens）"""
     try:
-        from backend.wiki.store import wiki_store
+        from wiki.store import wiki_store
 
         # 提取产品/方向关键词
         keywords = set()

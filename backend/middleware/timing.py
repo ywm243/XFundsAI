@@ -34,7 +34,7 @@ def _write_request_log(
 ) -> None:
     """Fire-and-forget insert into request_log."""
     try:
-        from backend.db.mysql_store import insert_request_log
+        from db.mysql_store import insert_request_log
 
         insert_request_log(request_id, method, path, status_code, duration_ms)
     except Exception:

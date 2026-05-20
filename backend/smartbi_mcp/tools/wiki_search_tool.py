@@ -1,6 +1,6 @@
 """MCP 工具: wiki_search — 搜索 wiki 概念/实体页面"""
 import logging
-from backend.tools.registry import ToolRegistry
+from tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def wiki_search(query: str, page_type: str = None, limit: int = 5) -> dict:
     """搜索 wiki 概念/实体页面"""
     try:
-        from backend.wiki.store import wiki_store
+        from wiki.store import wiki_store
         if wiki_store is None:
             return {"results": [], "count": 0, "error": "wiki_store not initialized"}
         results = wiki_store.query(keyword=query, limit=limit)
