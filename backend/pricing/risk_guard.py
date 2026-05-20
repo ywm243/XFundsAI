@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .models import QuoteResult
 from .pricing_rules import REJECTION_TEMPLATES
@@ -144,11 +147,27 @@ class RiskGuard:
         return True, None
 
     def check_sanctions(self, customer_info: dict | None) -> tuple[bool, Optional[str]]:
-        """规则9第1层：制裁/黑名单"""
+        """规则9第1层：制裁/黑名单 — wiki 预检 + 名单模糊匹配"""
         if not customer_info:
             return True, None
+
+        # 第 1 层：wiki 中已标记的制裁状态（静默拒绝）
         if customer_info.get("sanctions_status") == "BLOCKED":
-            return False, "暂不支持询价服务"  # 静默拒绝，不暴露具体原因
+            return False, "暂不支持询价服务"
+
+        # 第 2 层：本地制裁名单模糊匹配
+        customer_name = customer_info.get("name") or customer_info.get("customer_name", "")
+        country = customer_info.get("country_code", "")
+        if customer_name:
+            from .sanctions import check_sanctions as sanctions_check
+            ok, reason, hits = sanctions_check(customer_name, country)
+            if not ok:
+                logger.warning(
+                    "Sanctions hit: name=%s country=%s hits=%s",
+                    customer_name, country, [h.get("name") for h in hits],
+                )
+                return False, "暂不支持询价服务"  # 静默拒绝
+
         return True, None
 
     def check_product_permission(self, customer_info: dict | None, product_type: str) -> tuple[bool, Optional[str]]:
