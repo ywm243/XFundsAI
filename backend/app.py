@@ -585,7 +585,7 @@ async def api_chat(request: Request):
     from langgraph.state import AgentState
 
     body = await request.json()
-    text = body.get("text", "")
+    text = body.get("user_text") or body.get("text", "")
     session_id = body.get("session_id", "")
     context = body.get("context")
 
