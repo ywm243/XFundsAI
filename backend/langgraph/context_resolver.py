@@ -1,12 +1,14 @@
 # backend/langgraph/context_resolver.py
 """Context Resolver — LLM-based full conversation history analysis."""
 
+import asyncio
 import json
 import logging
 import os
 import re
 from openai import OpenAI
 from langgraph.state import AgentState
+from backend.langgraph.context_assembler import ContextAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +45,57 @@ def _resolve_fallback(state: AgentState) -> dict:
 def resolve_context(state: AgentState) -> dict:
     """Analyze conversation history to infer inherited parameters.
 
-    Uses LLM for full history analysis when available,
-    falls back to rule-based last-turn matching.
+    Priority: ContextAssembler (Wiki + history + memory),
+    falls back to LLM-based analysis, then rule-based last-turn matching.
     """
-    ctx = state.context or []
-    if not ctx:
+    # ── Priority path: ContextAssembler (Wiki + conversation + memory) ──
+    wiki_store = None
+    try:
+        from backend.wiki.store import wiki_store as _ws  # noqa: F811
+        wiki_store = _ws
+    except Exception:
+        pass
+
+    assembler = ContextAssembler()
+    assembled_ctx = None
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+            # Running in async context — schedule on existing loop
+            future = asyncio.run_coroutine_threadsafe(
+                assembler.assemble(
+                    state.session_id or "",
+                    state.user_text or "",
+                    (state.router_decision or {}).get("agent", "BI"),
+                    wiki_store,
+                ),
+                loop,
+            )
+            assembled_ctx = future.result(timeout=3)
+        except RuntimeError:
+            # No running loop — use asyncio.run directly
+            assembled_ctx = asyncio.run(assembler.assemble(
+                state.session_id or "",
+                state.user_text or "",
+                (state.router_decision or {}).get("agent", "BI"),
+                wiki_store,
+            ))
+    except Exception as e:
+        logger.warning("ContextAssembler failed, falling back to LLM path: %s", e)
+
+    if assembled_ctx and assembled_ctx.resolved_params:
+        return {
+            "resolved_params": assembled_ctx.resolved_params,
+            "inherited_fields": list(assembled_ctx.resolved_params.keys()),
+            "context_confidence": 0.9 if assembled_ctx.wiki_hit else 0.7,
+            "needs_confirm": [],
+            "_assembled_context": assembled_ctx.total_context,
+            "wiki_hit": assembled_ctx.wiki_hit,
+        }
+
+    # ── Fallback: original LLM + rule-based path ──
+    context_list = state.context or []
+    if not context_list:
         return {
             "resolved_params": {},
             "inherited_fields": [],
@@ -64,7 +112,7 @@ def resolve_context(state: AgentState) -> dict:
 
     # Build conversation history for LLM prompt
     history_lines = []
-    for msg in ctx[-20:]:
+    for msg in context_list[-20:]:
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if isinstance(content, str):
