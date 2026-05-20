@@ -31,49 +31,14 @@ class RiskGuard:
 
     def pre_check(self, customer_id: str, customer_info: dict | None,
                   product_type: str = "", amount: float = 0) -> tuple[bool, Optional[str]]:
-        """询价前综合风控：制裁→账户→产品权限→金额阈值。Wiki 回退：无 customer_info 时从 wiki 读客户画像。"""
-        # Wiki fallback: if no customer_info provided, try reading from wiki
-        if not customer_info and customer_id:
-            try:
-                from wiki.query import get_customer_profile
-                profile = get_customer_profile(customer_id)
-                if profile:
-                    fm = profile.get("frontmatter", {})
-                    customer_info = {
-                        "account_status": fm.get("account_status", "ACTIVE"),
-                        "customer_type": fm.get("customer_type", ""),
-                        "sanctions_status": fm.get("sanctions_status", "clear"),
-                        "product_permissions": fm.get("product_permissions", []),
-                    }
-            except Exception:
-                customer_info = customer_info or {}
-
-        if not customer_info:
-            customer_info = {}
+        """询价前风控（demo：仅频率 + 金额阈值，其余暂不启用）"""
 
         # 频率控制（每客户 5 秒冷却）
         rate_ok, rate_remaining = self.check_rate_limit(customer_id)
         if not rate_ok:
             return False, f"询价频率过快，请{rate_remaining}秒后重试。"
 
-        ok, reason = self.check_sanctions(customer_info)
-        if not ok:
-            return False, reason
-
-        if not customer_info:
-            return True, None
-
-        status = customer_info.get("account_status", "ACTIVE")
-        if status == "FROZEN":
-            return False, "客户账户状态异常，暂不支持询价服务。请联系客户经理。"
-        if status == "CLOSED":
-            return False, "账户已销户，暂不支持询价服务。"
-
-        if product_type:
-            ok, reason = self.check_product_permission(customer_info, product_type)
-            if not ok:
-                return False, reason
-
+        # 金额阈值
         if amount > 0:
             ok, reason = self.check_amount_threshold(amount, product_type or "SPOT")
             if not ok:

@@ -177,26 +177,16 @@ class MockPricingEngine:
 
     def execute_trade(self, quote_id: str, customer_id: str,
                       amount: float = None) -> TradeResult:
-        """模拟交易执行（90% 成功率）"""
+        """交易执行 — demo 模式默认成功"""
         self._trade_counter += 1
-        success = self._rng.random() < 0.90
-
-        if success:
-            return TradeResult(
-                success=True,
-                trade_id=f"TD{datetime.now().strftime('%Y%m%d')}{self._trade_counter:06d}",
-                quote_id=quote_id,
-                product_type="SPOT",
-                currency_pair="USD/CNY",
-                direction="B",
-                amount=amount,
-                executed_rate=round(_BASE_RATES["USD/CNY"] + self._rng.randint(-5, 5) / 10000, 4),
-                executed_at=datetime.now().isoformat() + "+08:00",
-            )
-        else:
-            return TradeResult(
-                success=False,
-                quote_id=quote_id,
-                error_code="TRADE_TIMEOUT",
-                error_reason="交易执行超时，请稍后重试",
-            )
+        return TradeResult(
+            success=True,
+            trade_id=f"TD{datetime.now().strftime('%Y%m%d')}{self._trade_counter:06d}",
+            quote_id=quote_id,
+            product_type="SPOT",
+            currency_pair="USD/CNY",
+            direction="B",
+            amount=amount,
+            executed_rate=round(_BASE_RATES["USD/CNY"] + self._rng.randint(-5, 5) / 10000, 4),
+            executed_at=datetime.now().isoformat() + "+08:00",
+        )
