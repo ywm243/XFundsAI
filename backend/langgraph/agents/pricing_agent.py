@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json
 import logging
+import time
 
 from langgraph.graph import StateGraph
 from langgraph.state import AgentState
@@ -133,9 +134,9 @@ async def _node_pricing_validate(state: AgentState) -> dict:
     """Validate pricing response."""
     result = state.pricing_result
     if not result:
-        return {"error": "询价未返回结果"}
+        return {"errors": [{"node": "pricing_agent.validate", "code": "NoResult", "message": "询价未返回结果", "severity": "fatal", "timestamp": time.time()}]}
     if result.get("mode") == "error":
-        return {"error": result.get("error", "询价异常")}
+        return {"errors": [{"node": "pricing_agent.validate", "code": "PricingError", "message": result.get("error", "询价异常"), "severity": "fatal", "timestamp": time.time()}]}
     if result.get("mode") == "follow_up":
         return {}
     return {"validation_warnings": []}

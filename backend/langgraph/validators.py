@@ -108,10 +108,18 @@ def node_validate_result(state: AgentState) -> dict:
 
 def node_validate(state: AgentState) -> dict:
     """Run both SQL and result validators."""
+    # 如果有 fatal 错误，跳过验证直接返回
+    fatals = [e for e in state.errors if e["severity"] == "fatal"]
+    if fatals:
+        return {
+            "validation_warnings": [f["message"] for f in fatals],
+            "sql_validated": False,
+        }
+
     sql_result = node_validate_sql(state)
     result_result = node_validate_result(state)
     return {
-        "sql_validated": sql_result.get("sql_validated", False),
+        "sql_validated": sql_result.get("sql_validated", True),
         "validation_warnings": (
             sql_result.get("validation_warnings", [])
             + result_result.get("validation_warnings", [])

@@ -43,4 +43,27 @@ class AgentState:
     summary: str = ""
     chart_option: dict | None = None
     insights: list[dict] = field(default_factory=list)
-    error: str = ""
+    errors: list[dict] = field(default_factory=list)
+    # 每个 error dict: {node: str, code: str, message: str,
+    #                   severity: "fatal"|"warning"|"info", timestamp: float}
+
+    # 后向兼容属性
+    @property
+    def error(self) -> str:
+        fatals = [e for e in self.errors if e["severity"] == "fatal"]
+        if fatals:
+            return fatals[0]["message"]
+        if self.errors:
+            return self.errors[-1]["message"]
+        return ""
+
+    @error.setter
+    def error(self, value: str):
+        if value:
+            self.errors.append({
+                "node": "unknown",
+                "code": "Error",
+                "message": value,
+                "severity": "warning",
+                "timestamp": 0.0,
+            })

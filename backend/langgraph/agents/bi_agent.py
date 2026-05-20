@@ -4,6 +4,7 @@ Uses services layer instead of importing from app.py (fixes circular dependency)
 """
 
 import logging
+import time
 from langgraph.graph import StateGraph
 from llm_parser.parser import rule_based_parse, _rule_confidence, compute_comparison_dates
 from llm_parser.rules_engine import gatekeep
@@ -60,14 +61,14 @@ def _node_build_sql(state: AgentState) -> dict:
     """Build SQL from parsed params using query service."""
     parsed = state.parsed_params
     if not parsed or not parsed.get("product_type"):
-        return {"sql": "", "sql_validated": False, "error": "Missing product_type in parsed params"}
+        return {"sql": "", "sql_validated": False, "errors": [{"node": "bi_agent.build_sql", "code": "MissingProductType", "message": "Missing product_type in parsed params", "severity": "fatal", "timestamp": time.time()}]}
 
     try:
         sql = build_sql(parsed, date_start=parsed.get("date_start") or None, date_end=parsed.get("date_end") or None)
         return {"sql": sql, "sql_validated": True}
     except Exception as exc:
         logger.warning("build_sql failed: %s", exc)
-        return {"sql": "", "sql_validated": False, "error": str(exc)}
+        return {"sql": "", "sql_validated": False, "errors": [{"node": "bi_agent.build_sql", "code": "BuildSqlError", "message": str(exc), "severity": "fatal", "timestamp": time.time()}]}
 
 
 def _node_execute(state: AgentState) -> dict:
@@ -81,7 +82,7 @@ def _node_execute(state: AgentState) -> dict:
         return {"columns": cols, "rows": rows, "row_count": len(rows)}
     except Exception as exc:
         logger.warning("execute failed: %s", exc)
-        return {"columns": [], "rows": [], "row_count": 0, "error": str(exc)}
+        return {"columns": [], "rows": [], "row_count": 0, "errors": [{"node": "bi_agent.execute", "code": "ExecuteError", "message": str(exc), "severity": "fatal", "timestamp": time.time()}]}
 
 
 def _node_build_comparison(state: AgentState) -> dict:
