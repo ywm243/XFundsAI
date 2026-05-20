@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     model_config = {
         "env_file": str(_ENV_FILE),
         "env_file_encoding": "utf-8",
+        "extra": "allow",  # 允许 .env 中包含未定义字段（如 llm_model_flash, llm_model_pro）
     }
 
 
