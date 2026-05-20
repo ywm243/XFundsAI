@@ -213,6 +213,32 @@ CREATE TABLE IF NOT EXISTS token_usage_log (
     INDEX idx_call_site (call_site),
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS request_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
+    method VARCHAR(8) NOT NULL DEFAULT '',
+    path VARCHAR(256) NOT NULL DEFAULT '',
+    status_code INT NOT NULL DEFAULT 0,
+    duration_ms FLOAT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_request_id (request_id),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS error_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
+    method VARCHAR(8) NOT NULL DEFAULT '',
+    path VARCHAR(256) NOT NULL DEFAULT '',
+    error_type VARCHAR(64) NOT NULL DEFAULT '',
+    error_message TEXT,
+    traceback TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_request_id (request_id),
+    INDEX idx_error_type (error_type),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -1117,40 +1143,82 @@ def delete_wiki_page(slug: str) -> bool:
 # Token usage tracking (Phase 0 — observability)
 # ============================================================
 
-def insert_token_usage(conn, request_id: str, session_id: str, call_site: str,
+def insert_token_usage(request_id: str, session_id: str, call_site: str,
                        model_tier: str, model_name: str,
                        prompt_tokens: int, completion_tokens: int,
                        total_tokens: int, duration_ms: float) -> int:
-    sql = """INSERT INTO token_usage_log (request_id, session_id, call_site,
-              model_tier, model_name, prompt_tokens, completion_tokens,
-              total_tokens, duration_ms)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-    with conn.cursor() as cur:
-        cur.execute(sql, (request_id, session_id, call_site, model_tier,
-                         model_name, prompt_tokens, completion_tokens,
-                         total_tokens, duration_ms))
-        return cur.lastrowid
+    conn = get_conn()
+    try:
+        sql = """INSERT INTO token_usage_log (request_id, session_id, call_site,
+                  model_tier, model_name, prompt_tokens, completion_tokens,
+                  total_tokens, duration_ms)
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        with conn.cursor() as cur:
+            cur.execute(sql, (request_id, session_id, call_site, model_tier,
+                             model_name, prompt_tokens, completion_tokens,
+                             total_tokens, duration_ms))
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
 
 
-def query_token_usage(conn, call_site: str = None, session_id: str = None,
-                      window_hours: int = 24, group_by: str = None) -> list[dict]:
+def query_token_usage(call_site: str = None, session_id: str = None,
+                      window_hours: int = 24) -> list[dict]:
     """聚合查询 token 使用数据"""
-    where = ["created_at >= NOW() - INTERVAL %s HOUR"]
-    params = [window_hours]
-    if call_site:
-        where.append("call_site = %s")
-        params.append(call_site)
-    if session_id:
-        where.append("session_id = %s")
-        params.append(session_id)
-    sql = f"""SELECT call_site, model_tier,
-                     SUM(total_tokens) AS total_tokens,
-                     COUNT(*) AS call_count,
-                     AVG(duration_ms) AS avg_duration_ms
-              FROM token_usage_log
-              WHERE {' AND '.join(where)}
-              GROUP BY call_site, model_tier
-              ORDER BY total_tokens DESC"""
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+    conn = get_conn()
+    try:
+        where = ["created_at >= NOW() - INTERVAL %s HOUR"]
+        params = [window_hours]
+        if call_site:
+            where.append("call_site = %s")
+            params.append(call_site)
+        if session_id:
+            where.append("session_id = %s")
+            params.append(session_id)
+        sql = f"""SELECT call_site, model_tier,
+                         SUM(total_tokens) AS total_tokens,
+                         COUNT(*) AS call_count,
+                         AVG(duration_ms) AS avg_duration_ms
+                  FROM token_usage_log
+                  WHERE {' AND '.join(where)}
+                  GROUP BY call_site, model_tier
+                  ORDER BY total_tokens DESC"""
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Request / Error logging (Phase 0 — middleware observability)
+# ============================================================
+
+
+def insert_request_log(request_id: str, method: str, path: str,
+                       status_code: int, duration_ms: float) -> int:
+    conn = get_conn()
+    try:
+        sql = """INSERT INTO request_log (request_id, method, path, status_code, duration_ms)
+                 VALUES (%s, %s, %s, %s, %s)"""
+        with conn.cursor() as cur:
+            cur.execute(sql, (request_id, method, path, status_code, duration_ms))
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def insert_error_log(request_id: str, method: str, path: str,
+                     error_type: str, error_message: str, traceback: str) -> int:
+    conn = get_conn()
+    try:
+        sql = """INSERT INTO error_log (request_id, method, path, error_type, error_message, traceback)
+                 VALUES (%s, %s, %s, %s, %s, %s)"""
+        with conn.cursor() as cur:
+            cur.execute(sql, (request_id, method, path, error_type, error_message, traceback))
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
