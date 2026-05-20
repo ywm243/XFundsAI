@@ -273,6 +273,26 @@ CREATE TABLE IF NOT EXISTS tool_calls_log (
     INDEX idx_tool_name (tool_name),
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS evaluation_records (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    request_id VARCHAR(64) NOT NULL DEFAULT '',
+    session_id VARCHAR(128) NOT NULL DEFAULT '',
+    agent_type VARCHAR(16) NOT NULL DEFAULT '' COMMENT 'BI/PRICING/ANALYSIS',
+    router_confidence FLOAT NOT NULL DEFAULT 0,
+    parse_confidence FLOAT NOT NULL DEFAULT 0,
+    post_validation_mismatches JSON COMMENT '数字不匹配列表',
+    sql_validated BOOLEAN NOT NULL DEFAULT TRUE,
+    validation_warnings_count INT NOT NULL DEFAULT 0,
+    total_duration_ms FLOAT NOT NULL DEFAULT 0,
+    wiki_hit BOOLEAN NOT NULL DEFAULT FALSE,
+    errors_count INT NOT NULL DEFAULT 0,
+    fatal_errors INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_session_id (session_id),
+    INDEX idx_agent_type (agent_type),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -1275,5 +1295,57 @@ def insert_error_log(request_id: str, method: str, path: str,
             cur.execute(sql, (request_id, method, path, error_type, error_message, traceback))
             conn.commit()
             return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def insert_evaluation_record(record: dict) -> int:
+    """Insert an evaluation record after each LangGraph execution."""
+    conn = get_conn()
+    try:
+        sql = """INSERT INTO evaluation_records
+                 (request_id, session_id, agent_type, router_confidence,
+                  parse_confidence, post_validation_mismatches, sql_validated,
+                  validation_warnings_count, total_duration_ms, wiki_hit,
+                  errors_count, fatal_errors)
+                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+        with conn.cursor() as cur:
+            import json
+            cur.execute(sql, (
+                record["request_id"], record["session_id"], record["agent_type"],
+                record["router_confidence"], record["parse_confidence"],
+                json.dumps(record.get("post_validation_mismatches", [])),
+                record.get("sql_validated", True), record.get("validation_warnings_count", 0),
+                record.get("total_duration_ms", 0), record.get("wiki_hit", False),
+                record.get("errors_count", 0), record.get("fatal_errors", 0),
+            ))
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def query_evaluation_metrics(window_hours: int = 24, agent_type: str = None) -> list[dict]:
+    """Aggregate evaluation metrics over a time window, optionally filtered by agent_type."""
+    conn = get_conn()
+    try:
+        where = ["created_at >= NOW() - INTERVAL %s HOUR"]
+        params = [window_hours]
+        if agent_type:
+            where.append("agent_type = %s")
+            params.append(agent_type)
+        sql = f"""SELECT agent_type,
+                         COUNT(*) AS total_requests,
+                         AVG(router_confidence) AS avg_router_conf,
+                         AVG(parse_confidence) AS avg_parse_conf,
+                         AVG(total_duration_ms) AS avg_duration_ms,
+                         SUM(CASE WHEN wiki_hit THEN 1 ELSE 0 END) / COUNT(*) AS wiki_hit_rate,
+                         SUM(CASE WHEN fatal_errors > 0 THEN 1 ELSE 0 END) / COUNT(*) AS error_rate
+                  FROM evaluation_records
+                  WHERE {' AND '.join(where)}
+                  GROUP BY agent_type"""
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
     finally:
         conn.close()

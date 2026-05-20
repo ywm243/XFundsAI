@@ -19,7 +19,8 @@ class EventBus:
         "trade.failed":        "交易执行失败",
         "market.rate_changed": "汇率变动",
         "customer.risk_alert": "客户风险等级与产品不匹配",
-        "wiki.page_updated":  "wiki页面创建或更新",
+        "wiki.page_updated":     "wiki页面创建或更新",
+        "evaluation.degraded":   "质量评估降级",
     }
 
     def __init__(self):

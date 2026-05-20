@@ -36,6 +36,7 @@ class QualityRouter:
         "analysis_text":   {"tier": "pro",   "max_tokens": 2048, "temperature": 0.1},
         "analysis_retry":  {"tier": "pro",   "max_tokens": 2048, "temperature": 0.1},
         "insight_generate":{"tier": "pro",   "max_tokens": 1024, "temperature": 0.3},
+        "llm_chat":         {"tier": "pro",   "max_tokens": 2048, "temperature": 0.3},
     }
 
     CONTEXT_UPGRADE_THRESHOLD = 4000

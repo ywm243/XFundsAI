@@ -9,7 +9,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from db import mysql_store
@@ -159,40 +159,42 @@ class PricingService:
         for q in quotes:
             post_ok, post_reason = self.risk_guard.post_check(q)
             if not post_ok:
-                sm.transition("ERROR")
-                await self._save_session(
-                    pricing_id=pricing_id,
-                    session_id=session_id,
-                    intent_type=intent.intent_type.value,
-                    status=sm.status,
-                    inquiry_params=[asdict(p) for p in params_list],
-                    quote_results=[asdict(q) for q in quotes],
-                    customer_id=customer_id,
-                    valid_until=None,
-                )
+                session_data = {
+                    "id": pricing_id,
+                    "session_id": session_id,
+                    "intent_type": intent.intent_type.value,
+                    "inquiry_params": json.dumps([asdict(p) for p in params_list], ensure_ascii=False),
+                    "quote_results": json.dumps([asdict(q) for q in quotes], ensure_ascii=False),
+                    "quote_id": quotes[0].quote_id if quotes else "",
+                    "customer_id": customer_id,
+                    "valid_until": None,
+                    "trade_result": None,
+                    "trade_error": None,
+                }
+                await self._transition_and_save(pricing_id, sm, "ERROR", session_data)
                 return {
                     "mode": "pricing_error",
                     "reason": post_reason,
                     "pricing_id": pricing_id,
                 }
 
-        # 9. QUOTING → QUOTED
-        sm.transition("QUOTED", validity_minutes=self.validity_minutes)
-
-        # 10. 保存会话
+        # 9. QUOTING → QUOTED（事务性）
         valid_until_str = (
-            sm.valid_until.isoformat() if sm.valid_until else None
-        )
-        await self._save_session(
-            pricing_id=pricing_id,
-            session_id=session_id,
-            intent_type=intent.intent_type.value,
-            status=sm.status,
-            inquiry_params=[asdict(p) for p in params_list],
-            quote_results=[asdict(q) for q in quotes],
-            customer_id=customer_id,
-            valid_until=valid_until_str,
-        )
+            datetime.now() + timedelta(minutes=self.validity_minutes)
+        ).isoformat()
+        session_data = {
+            "id": pricing_id,
+            "session_id": session_id,
+            "intent_type": intent.intent_type.value,
+            "inquiry_params": json.dumps([asdict(p) for p in params_list], ensure_ascii=False),
+            "quote_results": json.dumps([asdict(q) for q in quotes], ensure_ascii=False),
+            "quote_id": quotes[0].quote_id if quotes else "",
+            "customer_id": customer_id,
+            "valid_until": valid_until_str,
+            "trade_result": None,
+            "trade_error": None,
+        }
+        await self._transition_and_save(pricing_id, sm, "QUOTED", session_data)
 
         # 11. 审计日志（规则13 + 14：电子证据哈希）
         inquiry_detail = {
@@ -210,6 +212,8 @@ class PricingService:
             pricing_id, "INQUIRY", inquiry_detail,
             evidence_hash=evidence_hash,
             evidence_type="quote",
+            engine_raw=None,
+            llm_steps=None,
         )
 
         # 12. 发布事件
@@ -295,33 +299,36 @@ class PricingService:
             quote_id=quote_id, customer_id=customer_id, amount=amount
         )
 
-        # 6. 状态机转换
+        # 6. 状态机转换 + 保存（事务性）
         is_novice = self.risk_guard.is_novice(customer_info)
-        if trade_result.success:
-            sm.transition("TRADED")
-            event = "trade.executed"
-        else:
-            sm.transition("TRADE_FAILED")
-            event = "trade.failed"
-
-        # 7. 保存
+        new_status = "TRADED" if trade_result.success else "TRADE_FAILED"
+        event = "trade.executed" if trade_result.success else "trade.failed"
         trade_result_dict = asdict(trade_result)
-        valid_until = sm.valid_until.isoformat() if sm.valid_until else None
-        await self._save_session(
-            pricing_id=pricing_id,
-            session_id=record.get("session_id", ""),
-            intent_type=record.get("intent_type", "SINGLE"),
-            status=sm.status,
-            inquiry_params=record.get("inquiry_params", "[]"),
-            quote_results=record.get("quote_results", "[]"),
-            customer_id=customer_id,
-            valid_until=valid_until,
-            trade_result=trade_result_dict,
-            trade_error=None if trade_result.success else {
+
+        # 解析 quote_results 提取 quote_id
+        quote_results_raw = record.get("quote_results", "[]")
+        if isinstance(quote_results_raw, str):
+            quote_results_parsed = json.loads(quote_results_raw)
+        else:
+            quote_results_parsed = quote_results_raw
+        quote_id_val = quote_results_parsed[0].get("quote_id", "") if quote_results_parsed else ""
+
+        session_data = {
+            "id": pricing_id,
+            "session_id": record.get("session_id", ""),
+            "intent_type": record.get("intent_type", "SINGLE"),
+            "inquiry_params": record.get("inquiry_params", "[]"),
+            "quote_results": record.get("quote_results", "[]"),
+            "quote_id": quote_id_val,
+            "customer_id": customer_id,
+            "valid_until": None,
+            "trade_result": json.dumps(trade_result_dict, ensure_ascii=False),
+            "trade_error": None if trade_result.success else json.dumps({
                 "error_code": trade_result.error_code,
                 "error_reason": trade_result.error_reason,
-            },
-        )
+            }, ensure_ascii=False),
+        }
+        await self._transition_and_save(pricing_id, sm, new_status, session_data)
 
         # 8. 审计日志（规则13 + 14：电子证据哈希）
         action_label = "TRADE_CONFIRMED" if trade_result.success else "TRADE_FAILED"
@@ -337,6 +344,8 @@ class PricingService:
             detail=trade_result_dict,
             evidence_hash=evidence_hash,
             evidence_type="trade_confirm",
+            engine_raw=None,
+            llm_steps=None,
         )
 
         # 9. 发布事件
@@ -408,23 +417,25 @@ class PricingService:
                 sm.transition("ERROR")
                 return {"mode": "pricing_error", "reason": post_reason}
 
-        # QUOTING → QUOTED
-        sm.transition("QUOTED", validity_minutes=self.validity_minutes)
-
-        valid_until_str = sm.valid_until.isoformat() if sm.valid_until else None
+        # QUOTING → QUOTED（事务性）
+        valid_until_str = (
+            datetime.now() + timedelta(minutes=self.validity_minutes)
+        ).isoformat()
         intent_type = record.get("intent_type", "SINGLE")
 
-        # 保存
-        await self._save_session(
-            pricing_id=pricing_id,
-            session_id=record.get("session_id", ""),
-            intent_type=intent_type,
-            status=sm.status,
-            inquiry_params=[asdict(p) for p in params_list],
-            quote_results=[asdict(q) for q in quotes],
-            customer_id=customer_id,
-            valid_until=valid_until_str,
-        )
+        session_data = {
+            "id": pricing_id,
+            "session_id": record.get("session_id", ""),
+            "intent_type": intent_type,
+            "inquiry_params": json.dumps([asdict(p) for p in params_list], ensure_ascii=False),
+            "quote_results": json.dumps([asdict(q) for q in quotes], ensure_ascii=False),
+            "quote_id": quotes[0].quote_id if quotes else "",
+            "customer_id": customer_id,
+            "valid_until": valid_until_str,
+            "trade_result": None,
+            "trade_error": None,
+        }
+        await self._transition_and_save(pricing_id, sm, "QUOTED", session_data)
 
         # 审计（规则13 + 14：电子证据哈希）
         refresh_detail = {"quote_count": len(quotes)}
@@ -440,6 +451,8 @@ class PricingService:
             detail=refresh_detail,
             evidence_hash=evidence_hash,
             evidence_type="quote_refresh",
+            engine_raw=None,
+            llm_steps=None,
         )
 
         # 发布事件
@@ -470,25 +483,33 @@ class PricingService:
                 sm._status = PricingStatus.QUOTED
             self._state_machines[pricing_id] = sm
 
-        try:
-            sm.transition("CANCELLED")
-        except InvalidTransitionError:
+        if not sm.can_transition("CANCELLED"):
             return {
                 "mode": "pricing_error",
                 "reason": f"当前状态 {sm.status} 不允许取消",
             }
 
-        # 保存
-        await self._save_session(
-            pricing_id=pricing_id,
-            session_id=record.get("session_id", ""),
-            intent_type=record.get("intent_type", "SINGLE"),
-            status=sm.status,
-            inquiry_params=record.get("inquiry_params", "[]"),
-            quote_results=record.get("quote_results", "[]"),
-            customer_id=record.get("customer_id", ""),
-            valid_until=None,
-        )
+        # 解析 quote_results 提取 quote_id
+        quote_results_raw = record.get("quote_results", "[]")
+        if isinstance(quote_results_raw, str):
+            quote_results_parsed = json.loads(quote_results_raw)
+        else:
+            quote_results_parsed = quote_results_raw
+        quote_id_val = quote_results_parsed[0].get("quote_id", "") if quote_results_parsed else ""
+
+        session_data = {
+            "id": pricing_id,
+            "session_id": record.get("session_id", ""),
+            "intent_type": record.get("intent_type", "SINGLE"),
+            "inquiry_params": record.get("inquiry_params", "[]"),
+            "quote_results": record.get("quote_results", "[]"),
+            "quote_id": quote_id_val,
+            "customer_id": record.get("customer_id", ""),
+            "valid_until": None,
+            "trade_result": None,
+            "trade_error": None,
+        }
+        await self._transition_and_save(pricing_id, sm, "CANCELLED", session_data)
 
         # 审计（规则13 + 14：电子证据哈希）
         cancel_detail = {}
@@ -504,6 +525,8 @@ class PricingService:
             detail=cancel_detail,
             evidence_hash=evidence_hash,
             evidence_type="cancel",
+            engine_raw=None,
+            llm_steps=None,
         )
 
         # 发布事件
@@ -725,6 +748,46 @@ class PricingService:
         record["status"] = status
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, mysql_store.save_pricing_session, record)
+
+    async def _transition_and_save(self, pricing_id: str, machine,
+                                    new_status: str, session_data: dict) -> None:
+        """事务性状态转换：先写 DB → 成功后改内存，失败回滚"""
+        conn = None
+        try:
+            from backend.db.mysql_store import get_conn
+            conn = get_conn()
+            record = {**session_data, "status": new_status}
+            record.setdefault("last_activity", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO pricing_sessions
+                       (id, session_id, status, intent_type, inquiry_params,
+                        quote_results, quote_id, valid_until, trade_result,
+                        trade_error, customer_id, last_activity)
+                       VALUES (%(id)s, %(session_id)s, %(status)s, %(intent_type)s,
+                               %(inquiry_params)s, %(quote_results)s, %(quote_id)s,
+                               %(valid_until)s, %(trade_result)s, %(trade_error)s,
+                               %(customer_id)s, %(last_activity)s)
+                       ON DUPLICATE KEY UPDATE
+                         status=VALUES(status),
+                         quote_results=VALUES(quote_results),
+                         quote_id=VALUES(quote_id),
+                         valid_until=VALUES(valid_until),
+                         trade_result=VALUES(trade_result),
+                         trade_error=VALUES(trade_error),
+                         last_activity=VALUES(last_activity),
+                         updated_at=CURRENT_TIMESTAMP""",
+                    record,
+                )
+            machine.transition(new_status)
+            conn.commit()
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     def _format_inquiry_response(
         self,
