@@ -220,7 +220,7 @@ class PricingService:
         # 12. 发布事件
         await bus.publish("quote.created", pricing_id=pricing_id,
                           customer_id=customer_id,
-                          intent_type=intent.intent_type.value,
+                          intent_type=(intent.intent_type.value if hasattr(intent.intent_type, 'value') else str(intent.intent_type)),
                           quote_count=len(quotes))
 
         # 13. 格式化返回
@@ -836,7 +836,8 @@ class PricingService:
     ) -> dict:
         """格式化询价响应"""
         mode = _INTENT_MODE_MAP.get(
-            intent.intent_type.value, "pricing_single"
+            intent.intent_type.value if hasattr(intent.intent_type, 'value') else str(intent.intent_type),
+            "pricing_single",
         )
         response: dict = {
             "mode": mode,

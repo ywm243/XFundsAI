@@ -51,8 +51,15 @@ class ActionRequest(BaseModel):
 
 @router.post("/inquiry")
 async def inquiry(req: InquiryRequest):
-    from .models import PricingIntent
-    intent = PricingIntent(**req.intent) if req.intent else PricingIntent()
+    from .models import PricingIntent, IntentType
+    raw = dict(req.intent) if req.intent else {}
+    # 将字符串 intent_type 转为枚举
+    if isinstance(raw.get("intent_type"), str):
+        try:
+            raw["intent_type"] = IntentType(raw["intent_type"])
+        except ValueError:
+            raw["intent_type"] = IntentType.SINGLE
+    intent = PricingIntent(**raw) if raw else PricingIntent()
     service = get_pricing_service()
     return await service.handle_inquiry(
         text=req.text, intent=intent, customer_id=req.customer_id,
