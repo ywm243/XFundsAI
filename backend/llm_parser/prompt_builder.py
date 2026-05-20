@@ -72,6 +72,16 @@ def build_system_prompt(context: list | None = None, query_text: str = "", assem
     if assembled_context is not None:
         rules = _load_rules()
         prompt = _build_base_prompt(rules)
+
+        # Wiki 规则注入（Flash 低成本，补充 gatekeep 盲区）
+        if query_text:
+            try:
+                wiki_context = _match_wiki_concepts(query_text)
+                if wiki_context:
+                    prompt += f"\n\n## 业务规则补充（来自知识库）\n{wiki_context}"
+            except Exception:
+                pass
+
         parts = [prompt]
         parts.append("## 组装上下文（含 wiki + 对话历史 + agent 记忆）")
         parts.append(assembled_context)
@@ -82,6 +92,16 @@ def build_system_prompt(context: list | None = None, query_text: str = "", assem
     if context:
         rules = _load_rules()
         prompt = _build_base_prompt(rules)
+
+        # Wiki 规则注入（Flash 低成本，补充 gatekeep 盲区）
+        if query_text:
+            try:
+                wiki_context = _match_wiki_concepts(query_text)
+                if wiki_context:
+                    prompt += f"\n\n## 业务规则补充（来自知识库）\n{wiki_context}"
+            except Exception:
+                pass
+
         ctx_lines = ["## 对话上下文（多轮对话历史）"]
         for item in context:
             role = item.get("role", "user")
@@ -197,3 +217,48 @@ def invalidate_cache() -> None:
     global _cache
     _cache = None
     logger.info("Prompt cache invalidated")
+
+
+def _match_wiki_concepts(query_text: str) -> str | None:
+    """关键词匹配 wiki 概念页，提取相关规则片段（上限 1200 tokens）"""
+    try:
+        from backend.wiki.store import wiki_store
+
+        # 提取产品/方向关键词
+        keywords = set()
+        for kw in ["即期", "远期", "掉期", "结汇", "购汇", "交易量", "套保率",
+                    "报价", "询价", "月", "季度", "年"]:
+            if kw in query_text:
+                keywords.add(kw)
+        if not keywords:
+            return None
+
+        # 用每个关键词搜索 wiki 概念页，去重后取前 3 条
+        seen = set()
+        pages = []
+        for kw in keywords:
+            results = wiki_store.query(keyword=kw, limit=3)
+            for r in results:
+                slug = r.get("slug")
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    pages.append(r)
+            if len(pages) >= 3:
+                break
+
+        if not pages:
+            return None
+
+        lines = []
+        for p in pages[:3]:
+            body = (p.get("body") or "")[:400]
+            if body:
+                lines.append(f"### {p.get('title', '')}\n{body}")
+
+        combined = "\n\n".join(lines)
+        # 粗略 token 估算（~4 chars/token），上限 1200 tokens ≈ 4800 chars
+        if len(combined) > 4800:
+            combined = combined[:4800] + "\n...(truncated)"
+        return combined if combined else None
+    except Exception:
+        return None
