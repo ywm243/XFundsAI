@@ -66,8 +66,18 @@ def _render_product_type(rules: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(context: list | None = None) -> str:
+def build_system_prompt(context: list | None = None, query_text: str = "", assembled_context: str | None = None) -> str:
     global _cache
+    # 优先使用已组装好的上下文（消除与 context_resolver 的双重发送）
+    if assembled_context is not None:
+        rules = _load_rules()
+        prompt = _build_base_prompt(rules)
+        parts = [prompt]
+        parts.append("## 组装上下文（含 wiki + 对话历史 + agent 记忆）")
+        parts.append(assembled_context)
+        if query_text:
+            parts.append(f"## 当前查询\n{query_text}")
+        return "\n".join(parts)
     # Don't cache when context is provided (dynamic per request)
     if context:
         rules = _load_rules()

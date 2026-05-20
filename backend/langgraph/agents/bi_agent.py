@@ -32,7 +32,14 @@ def _node_parse(state: AgentState) -> dict:
         parsed = gatekeep(rule_parsed, text)
         pipeline = f"rule(confidence={confidence:.0%})"
     else:
-        system_prompt = build_system_prompt(state.context)
+        # 优先使用 ContextAssembler 组装好的上下文（已包含 wiki + 对话历史 + agent 记忆）
+        # 不再传入原始 state.context，消除双重发送
+        assembled = getattr(state, "_assembled_context", None)
+        system_prompt = build_system_prompt(
+            context=None,                      # 不再发送原始 context
+            query_text=getattr(state, "user_text", ""),
+            assembled_context=assembled
+        )
         llm_result = llm_parse(text, system_prompt)
         if llm_result is not None:
             parsed = gatekeep(llm_result, text)
