@@ -7,6 +7,7 @@ DB update, avoiding redundant writes on every compile_all() call.
 import json
 import logging
 import re
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,27 @@ WIKI_ROOT = Path(__file__).resolve().parent.parent.parent / "llm-wiki"
 # ── Frontmatter parsing ──────────────────────────────────────────────
 
 _FM_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _sanitize_fm(fm: dict) -> dict:
+    """Convert non-JSON-serializable values (date, datetime) to strings."""
+    out = {}
+    for k, v in fm.items():
+        if isinstance(v, (date, datetime)):
+            out[k] = v.isoformat()
+        elif isinstance(v, list):
+            out[k] = [_sanitize_value(i) for i in v]
+        elif isinstance(v, dict):
+            out[k] = _sanitize_fm(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _sanitize_value(v):
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()
+    return v
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -105,7 +127,7 @@ def compile_directory(directory: str, page_type: str = "concept") -> dict:
                 kwargs["parent_slug"] = fm["parent_slug"]
 
             # Pass remaining frontmatter as the frontmatter JSON field
-            kwargs["frontmatter"] = fm
+            kwargs["frontmatter"] = _sanitize_fm(fm)
 
             wiki_store.save(slug=slug, title=title, page_type=ptype, body=body, **kwargs)
             compiled += 1
