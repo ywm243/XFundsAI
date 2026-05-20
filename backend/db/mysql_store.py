@@ -1111,6 +1111,25 @@ def get_active_pricing_session(session_id: str) -> dict | None:
         conn.close()
 
 
+def expire_stale_quotes(validity_minutes: int = 5) -> int:
+    """将过期报价标记为 EXPIRED 状态。返回过期数量。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE pricing_sessions
+                   SET status = 'EXPIRED'
+                   WHERE status = 'QUOTED'
+                     AND last_activity < NOW() - INTERVAL %s MINUTE""",
+                (validity_minutes,)
+            )
+            count = cur.rowcount
+            conn.commit()
+            return count
+    finally:
+        conn.close()
+
+
 def add_pricing_audit(pricing_id: str, action: str, detail: dict,
                       actor: str = "CUSTOMER",
                       engine_raw: dict | None = None,

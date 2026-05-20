@@ -60,6 +60,7 @@ class PricingService:
         self.validity_minutes = validity_minutes
         # 情景配置：SCENARIO 模式下使用的期限列表
         self._scenarios: list[str] = ["1M", "3M", "6M", "1Y"]
+        self._cleanup_task: asyncio.Task | None = None
         # 会话超时时间（分钟）
         self._session_timeout: int = 5
         # 运行中报价的状态机缓存 pricing_id → PricingStateMachine
@@ -214,8 +215,8 @@ class PricingService:
             pricing_id, "INQUIRY", inquiry_detail,
             evidence_hash=evidence_hash,
             evidence_type="quote",
-            engine_raw=None,
-            llm_steps=None,
+            engine_raw={"quotes": [asdict(q) for q in quotes]},
+            llm_steps=[{"step": "parse_intent", "input": text, "output": asdict(intent)}],
         )
 
         # 12. 发布事件
@@ -351,14 +352,16 @@ class PricingService:
             f"|{datetime.now().isoformat()}"
         )
         evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
+        _audit_raw = {"trade_result": trade_result_dict}
+        _audit_steps = [{"step": "execute_trade", "quote_id": pricing_id}]
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
             action=action_label,
             detail=trade_result_dict,
             evidence_hash=evidence_hash,
             evidence_type="trade_confirm",
-            engine_raw=None,
-            llm_steps=None,
+            engine_raw=_audit_raw,
+            llm_steps=_audit_steps,
         )
 
         # 9. 发布事件
@@ -458,14 +461,16 @@ class PricingService:
             f"|{datetime.now().isoformat()}"
         )
         evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
+        _audit_raw = {"quotes": [asdict(q) for q in quotes]}
+        _audit_steps = [{"step": "refresh", "quote_id": pricing_id}]
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
             action="REFRESHED",
             detail=refresh_detail,
             evidence_hash=evidence_hash,
             evidence_type="quote_refresh",
-            engine_raw=None,
-            llm_steps=None,
+            engine_raw=_audit_raw,
+            llm_steps=_audit_steps,
         )
 
         # 发布事件
@@ -532,14 +537,16 @@ class PricingService:
             f"|{datetime.now().isoformat()}"
         )
         evidence_hash = hashlib.sha256(evidence_payload.encode()).hexdigest()
+        _audit_raw = {"action": "cancel"}
+        _audit_steps = [{"step": "cancel", "quote_id": pricing_id}]
         mysql_store.add_pricing_audit(
             pricing_id=pricing_id,
             action="CANCELLED",
             detail=cancel_detail,
             evidence_hash=evidence_hash,
             evidence_type="cancel",
-            engine_raw=None,
-            llm_steps=None,
+            engine_raw=_audit_raw,
+            llm_steps=_audit_steps,
         )
 
         # 发布事件
@@ -549,6 +556,35 @@ class PricingService:
             "mode": "pricing_cancelled",
             "pricing_id": pricing_id,
         }
+
+    # ------------------------------------------------------------------
+    # 后台清理任务
+    # ------------------------------------------------------------------
+
+    def start_expiry_cleanup(self, interval_seconds: int = 60):
+        """启动后台过期报价清理任务"""
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
+        self._cleanup_task = asyncio.create_task(
+            self._expiry_cleanup_loop(interval_seconds)
+        )
+        logger.info(f"Expiry cleanup started: every {interval_seconds}s")
+
+    def stop_expiry_cleanup(self):
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+
+    async def _expiry_cleanup_loop(self, interval_seconds: int):
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+                expired = mysql_store.expire_stale_quotes(self.validity_minutes)
+                if expired > 0:
+                    logger.info(f"Expired {expired} stale quotes")
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.warning("Expiry cleanup error", exc_info=True)
 
     # ------------------------------------------------------------------
     # 内部方法
