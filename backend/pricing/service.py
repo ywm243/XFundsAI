@@ -221,6 +221,7 @@ class PricingService:
         # 12. 发布事件
         await bus.publish("quote.created", pricing_id=pricing_id,
                           customer_id=customer_id,
+                          intent_type=intent.intent_type.value,
                           quote_count=len(quotes))
 
         # 13. 格式化返回
